@@ -17,11 +17,11 @@ A simple Telegram bot that asks for user input and sends the prompt to Yandex GP
    - Create an API key
    - Get your folder ID
 3. Create the credential files:
-   - Add your Telegram bot token to `.secret/bot-token.env`:
+   - Add your Telegram bot token to `.secrets/bot-token.env`:
      ```
      TELEGRAM_BOT_TOKEN=your_actual_bot_token_here
      ```
-   - Add your Yandex API credentials to `.secret/yandex-api-key.env`:
+   - Add your Yandex API credentials to `.secrets/yandex-api-key.env`:
      ```
      YANDEX_API_KEY=your_yandex_api_key_here
      YANDEX_FOLDER_ID=your_yandex_folder_id_here
@@ -53,5 +53,5 @@ The bot uses the python-telegram-bot library to:
 
 ## Security
 
-- All credentials are stored in separate files in the `.secret` directory which should NOT be committed to version control
-- The `.secret` directory is excluded from version control
+- All credentials are stored in separate files in the `.secrets` directory which should NOT be committed to version control
+- The `.secrets` directory is excluded from version control

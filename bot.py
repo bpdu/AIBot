@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 import os
 
 # Load environment variables from the secret files
-load_dotenv(dotenv_path='.secret/bot-token.env')
-load_dotenv(dotenv_path='.secret/yandex-api-key.env')
+load_dotenv(dotenv_path='.secrets/bot-token.env')
+load_dotenv(dotenv_path='.secrets/yandex-api-key.env')
 
 # Enable logging
 logging.basicConfig(
@@ -37,6 +37,10 @@ def help_command(update: Update, context: CallbackContext) -> None:
 
 def ask_question(update: Update, context: CallbackContext) -> None:
     """Store the user's question and show the 'Ask LLM' button."""
+    if update.message is None or update.message.text is None:
+        update.message.reply_text("Sorry, I couldn't process that message.")
+        return
+        
     user_question = update.message.text
     context.user_data['question'] = user_question
     
@@ -89,8 +93,12 @@ def button_handler(update: Update, context: CallbackContext) -> None:
         user_question = context.user_data.get('question', 'No question provided')
         # Call Yandex GPT API
         gpt_response = call_yandex_gpt(user_question)
-        response = f"You asked: {user_question}\n\nYandex GPT response:\n{gpt_response}"
+        response = f"{gpt_response}"
         query.edit_message_text(text=response)
+
+def error_handler(update: Update, context: CallbackContext) -> None:
+    """Log errors caused by updates."""
+    logger.error(f"Update {update} caused error {context.error}")
 
 def main() -> None:
     """Start the bot."""
@@ -109,6 +117,9 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("help", help_command))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, ask_question))
     dispatcher.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Add error handler
+    dispatcher.add_error_handler(error_handler)
 
     # Start the Bot
     updater.start_polling()
