@@ -6,7 +6,8 @@ A simple Telegram bot that asks for user input and sends the prompt to Yandex GP
 
 - Asks user for input (question)
 - Sends the question directly to Yandex GPT API
-- Returns the GPT response immediately
+- Returns the GPT response in JSON format: {"request": "user question", "response": "LLM answer"}
+- Returns the response immediately
 
 ## Setup
 
@@ -44,8 +45,8 @@ A simple Telegram bot that asks for user input and sends the prompt to Yandex GP
 
 The bot uses the python-telegram-bot library to:
 1. Listen for incoming messages
-2. Send the question directly to Yandex GPT API
-3. Return the GPT response to the user immediately
+2. Send the question directly to Yandex GPT API with instructions to respond in JSON format
+3. Return the JSON-formatted GPT response to the user immediately
 
 ## Security
 

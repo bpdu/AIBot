@@ -50,7 +50,7 @@ def ask_question(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(gpt_response)
 
 def call_yandex_gpt(prompt: str) -> str:
-    """Call Yandex GPT API and return the response."""
+    """Call Yandex GPT API and return the response in JSON format."""
     if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
         return "Yandex API key or folder ID not configured. Please check your environment variables."
     
@@ -58,6 +58,14 @@ def call_yandex_gpt(prompt: str) -> str:
         'Authorization': f'Api-Key {YANDEX_API_KEY}',
         'Content-Type': 'application/json'
     }
+    
+    # System prompt to instruct the LLM to respond in JSON format
+    system_prompt = (
+        "You are a helpful assistant. Please respond to all queries in valid JSON format only, "
+        "without any markdown or additional formatting. The JSON should have exactly this structure: "
+        '{"request": "put here the question from the user", "response": "put here your reply"}. '
+        "Make sure the JSON is valid and contains no syntax errors."
+    )
     
     payload = {
         "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite",
@@ -67,6 +75,10 @@ def call_yandex_gpt(prompt: str) -> str:
             "maxTokens": 2000
         },
         "messages": [
+            {
+                "role": "system",
+                "text": system_prompt
+            },
             {
                 "role": "user",
                 "text": prompt
