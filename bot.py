@@ -61,23 +61,20 @@ def call_yandex_gpt(prompt: str) -> str:
     
     # System prompt to instruct the LLM to respond in JSON format
     system_prompt = (
-        "You are a helpful assistant. Please respond to all queries in valid JSON format only. "
-        "IMPORTANT: Respond with raw JSON only, without any markdown formatting, code blocks, backticks, or additional text. "
-        "The JSON should have exactly this structure: "
-        '{"request": "put here the question from the user", "response": "put here your reply"}. '
-        "Make sure the JSON is valid and contains no syntax errors. "
-        "Start your response with { and end with } directly, without any additional characters. "
-        "Do not include any text before or after the JSON. "
-        "Do not wrap the JSON in triple backticks or any other formatting."
+        "Ответь на следующий запрос простым, понятным текстом на русском языке. "
+        "Не используй обратные кавычки (`), не оформляй ничего как код, не используй Markdown, JSON или структурированные блоки. "
+        "Пиши естественно, как в обычном разговоре. Не добавляй пояснений о том, что ты делаешь. Просто дай прямой ответ.\n\n"
+        'Например, на запрос: "Сколько лет Сергею Жукову из Руки вверх?" ожидается ответ "'
+        '{"request": "Сколько лет Сергею Жукову из Руки вверх?", "response": "К сожалению, у меня нет актуальной информации о возрасте Сергея Жукова."}'
+        '".'
     )
     
     payload = {
-        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite",
+        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/qwen3-235b-a22b-fp8/latest",
         "completionOptions": {
             "stream": False,
             "temperature": 0.7,
-            "maxTokens": 2000,
-            "disableQuotes": True
+            "maxTokens": 2000
         },
         "messages": [
             {
