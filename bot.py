@@ -76,7 +76,8 @@ def call_yandex_gpt(prompt: str) -> str:
         "completionOptions": {
             "stream": False,
             "temperature": 0.7,
-            "maxTokens": 2000
+            "maxTokens": 2000,
+            "disableQuotes": True
         },
         "messages": [
             {
