@@ -29,7 +29,7 @@ YANDEX_GPT_API_URL = 'https://llm.api.cloud.yandex.net/foundationModels/v1/compl
 def start(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
-    update.message.reply_text('Здравствуйте! Я приемщик автосервиса Петя. Я помогу составить план работ. Для начала, как вас зовут?')
+    update.message.reply_text('Здравствуйте! Я - писатель. Я могу подготовить рецензию на текст, который вы пришлете.')
 
 def help_command(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /help is issued."""
