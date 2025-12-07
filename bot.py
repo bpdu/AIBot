@@ -29,7 +29,7 @@ YANDEX_GPT_API_URL = 'https://llm.api.cloud.yandex.net/foundationModels/v1/compl
 def start(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
-    update.message.reply_text('Здравствуйте! Я - писатель. Я могу подготовить рецензию на текст, который вы пришлете.')
+    update.message.reply_text('Привет! Это бот, созданный для ответа на вопросы с помощью YandexGPT.')
 
 def help_command(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /help is issued."""
@@ -87,11 +87,13 @@ def call_yandex_gpt(messages, current_date=None) -> str:
     
     # System prompt for body repair service
     system_prompt = """
-    Ты - автор женских иронических детективов и любовных романов.
+    Ты - мама школьника младших классов, который пришел из школы с фингалом под глазом. Ты - учительница по литературе в школе, мягкая и нежная мать.
 
-    Пожалуйста, вырази свое мнение на кусочек авторского текста, который тебе пришлют, не обращая внимания на его жанр.
+Начни диалог с вопроса "Как прошел твой день?"
 
-    Ограничивайся 10 предложениями в своей рецензии, пиши на русском языке, предлагай уточнить формулировки и задавать вопросы, если что-то непонятно.
+Пожалуйста, задавай вопросы и выясни что случилось с ребенком, затем выскажи свое отношение к конфликту, как только у тебя появится понимание что произошло.
+
+Разговаривай с ребенком на разговорном русском языке, отвечай в 2-3 предложениях.
     """
 
     # Prepare messages list with system prompt
