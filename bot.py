@@ -24,12 +24,13 @@ TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 # OpenRouter API configuration (using free model)
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-MODEL_NAME = 'qwen/qwen-2.5-7b-instruct:free'  # Free model from OpenRouter
+# Using Mistral Small 3.1 - free model with 24B parameters
+MODEL_NAME = 'mistralai/mistral-small-3.1-24b-instruct:free'  # Free model from OpenRouter
 
 def start(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
-    update.message.reply_text('Привет! Это бот с бесплатной моделью Qwen через OpenRouter. Задавай любые вопросы!')
+    update.message.reply_text('Привет! Это бот с бесплатной моделью Mistral Small 3.1 (24B параметров) через OpenRouter. Задавай любые вопросы!')
 
 def help_command(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /help is issued."""
@@ -39,7 +40,7 @@ def help_command(update: Update, context: CallbackContext) -> None:
         '/help - Показать это сообщение\n'
         '/stats - Показать статистику использования токенов\n'
         '/clear - Очистить историю разговора\n\n'
-        'Просто отправьте мне вопрос, и я отвечу с помощью бесплатной модели Qwen!'
+        'Просто отправьте мне вопрос, и я отвечу с помощью бесплатной модели Mistral Small 3.1!'
     )
     update.message.reply_text(help_text)
 
