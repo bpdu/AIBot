@@ -12,6 +12,7 @@ import os
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
+from anyio.streams.memory import MemoryObjectSendStream, MemoryObjectReceiveStream
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -137,94 +138,58 @@ async def handle_websocket(websocket: WebSocket):
     await websocket.accept(subprotocol=subprotocol)
     logger.info(f"Новое WebSocket подключение от {websocket.client}, subprotocol={subprotocol}")
 
-    # Создаём очереди для входящих и исходящих сообщений
-    read_queue: asyncio.Queue = asyncio.Queue()
-    write_queue: asyncio.Queue = asyncio.Queue()
+    # Создаём anyio memory streams для MCP SDK
+    from anyio.streams.memory import create_memory_object_stream
 
-    # Создаём потоки для MCP сервера с правильными context managers
-    class MCPReadStream:
-        async def __aenter__(self):
-            logger.info("MCPReadStream.__aenter__")
-            return self
+    # Создаём пары потоков для двунаправленной коммуникации
+    read_stream_send, read_stream_receive = create_memory_object_stream()
+    write_stream_send, write_stream_receive = create_memory_object_stream()
 
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            logger.info("MCPReadStream.__aexit__")
-            pass
-
-        def __aiter__(self):
-            logger.info("MCPReadStream.__aiter__")
-            return self
-
-        async def __anext__(self):
-            logger.info("MCPReadStream.__anext__: waiting for message from read_queue")
-            message = await read_queue.get()
-            logger.info(f"MCPReadStream.__anext__: received message type={type(message)}")
-            if message is None:
-                logger.info("MCPReadStream.__anext__: message is None, raising StopAsyncIteration")
-                raise StopAsyncIteration
-            return message
-
-    class MCPWriteStream:
-        async def __aenter__(self):
-            logger.info("MCPWriteStream.__aenter__")
-            return self
-
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            logger.info("MCPWriteStream.__aexit__")
-            pass
-
-        async def send(self, message):
-            logger.info(f"MCPWriteStream.send: message type={type(message)}, putting to write_queue")
-            await write_queue.put(message)
-            logger.info("MCPWriteStream.send: message put to write_queue")
-
-    read_stream = MCPReadStream()
-    write_stream = MCPWriteStream()
+    logger.info("Created anyio memory streams for MCP communication")
 
     # Запускаем MCP сервер с этими потоками
     async def run_server():
         """Запуск MCP сервера."""
         try:
             logger.info("run_server: starting mcp_server.run()")
-            await mcp_server.run(
-                read_stream,
-                write_stream,
-                mcp_server.create_initialization_options()
-            )
+            async with read_stream_send, write_stream_receive:
+                await mcp_server.run(
+                    read_stream_receive,
+                    write_stream_send,
+                    mcp_server.create_initialization_options()
+                )
             logger.info("run_server: mcp_server.run() completed")
         except Exception as e:
             logger.error(f"Error in server: {e}", exc_info=True)
 
     # Задачи для чтения из WebSocket и записи в WebSocket
     async def read_from_websocket():
-        """Читаем сообщения из WebSocket и кладем в read_queue."""
+        """Читаем сообщения из WebSocket и отправляем в MCP read stream."""
         try:
-            while True:
-                logger.info("read_from_websocket: waiting for message from client")
-                data = await websocket.receive_text()
-                logger.info(f"read_from_websocket: received {len(data)} bytes")
-                # MCP SDK ожидает сырые JSON строки, не объекты
-                logger.info(f"read_from_websocket: putting raw string to read_queue")
-                await read_queue.put(data)
-                logger.info("read_from_websocket: message put to read_queue")
+            async with read_stream_send:
+                while True:
+                    logger.info("read_from_websocket: waiting for message from client")
+                    data = await websocket.receive_text()
+                    logger.info(f"read_from_websocket: received {len(data)} bytes")
+                    # MCP SDK ожидает JSON строки
+                    logger.info(f"read_from_websocket: sending to read_stream_send")
+                    await read_stream_send.send(data)
+                    logger.info("read_from_websocket: sent to MCP")
         except Exception as e:
             logger.error(f"read_from_websocket: error {e}", exc_info=True)
-            await read_queue.put(None)  # Сигнал завершения
 
     async def write_to_websocket():
-        """Читаем из write_queue и отправляем в WebSocket."""
+        """Читаем из MCP write stream и отправляем в WebSocket."""
         try:
-            while True:
-                logger.info("write_to_websocket: waiting for message from write_queue")
-                message = await write_queue.get()
-                logger.info(f"write_to_websocket: got message type={type(message)}")
-                if message is None:
-                    logger.info("write_to_websocket: got None, stopping")
-                    break
-                # MCP SDK передает сырые JSON строки
-                logger.info(f"write_to_websocket: sending {len(message)} bytes to client")
-                await websocket.send_text(message)
-                logger.info("write_to_websocket: message sent to client")
+            async with write_stream_receive:
+                while True:
+                    logger.info("write_to_websocket: waiting for message from MCP")
+                    message = await write_stream_receive.receive()
+                    logger.info(f"write_to_websocket: got message type={type(message)}, length={len(message) if isinstance(message, str) else 'N/A'}")
+                    # MCP SDK передает сырые JSON строки
+                    logger.info(f"write_to_websocket: sending to WebSocket")
+                    await websocket.send_text(message)
+                    logger.info("write_to_websocket: sent to client")
         except Exception as e:
             logger.error(f"write_to_websocket: error {e}", exc_info=True)
 
