@@ -45,6 +45,9 @@ mcp_server = Server("yandex-tracker-mcp-server")
 def get_tracker_tasks():
     """Получить задачи из Yandex Tracker API."""
     if not TRACKER_TOKEN or not TRACKER_ORG_ID:
+        logger.error("Tracker credentials not configured!")
+        logger.error(f"Token present: {bool(TRACKER_TOKEN)}")
+        logger.error(f"Org ID present: {bool(TRACKER_ORG_ID)}")
         return json.dumps({"error": "Tracker credentials not configured"})
 
     headers = {
@@ -55,7 +58,19 @@ def get_tracker_tasks():
 
     try:
         logger.info(f"Requesting tasks from Yandex Tracker...")
+        logger.info(f"API URL: {TRACKER_API_URL}")
+        logger.info(f"Token (first 10 chars): {TRACKER_TOKEN[:10]}...")
+        logger.info(f"Org ID: {TRACKER_ORG_ID}")
+        logger.info(f"Headers: Authorization=OAuth {TRACKER_TOKEN[:10]}..., X-Org-ID={TRACKER_ORG_ID}")
+
         response = requests.get(TRACKER_API_URL, headers=headers, timeout=10)
+
+        logger.info(f"Response status code: {response.status_code}")
+        logger.info(f"Response headers: {dict(response.headers)}")
+
+        if response.status_code != 200:
+            logger.error(f"Response body: {response.text[:500]}")
+
         response.raise_for_status()
 
         tasks = response.json()
@@ -78,6 +93,8 @@ def get_tracker_tasks():
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching tasks from Tracker: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Error response body: {e.response.text[:500]}")
         return json.dumps({"error": str(e)})
 
 
