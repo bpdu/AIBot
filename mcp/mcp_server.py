@@ -145,29 +145,39 @@ async def handle_sse(request: Request):
     # Создаём потоки для MCP сервера с правильными context managers
     class MCPReadStream:
         async def __aenter__(self):
+            logger.info("MCPReadStream.__aenter__")
             return self
 
         async def __aexit__(self, exc_type, exc_val, exc_tb):
+            logger.info("MCPReadStream.__aexit__")
             pass
 
         def __aiter__(self):
+            logger.info("MCPReadStream.__aiter__")
             return self
 
         async def __anext__(self):
+            logger.info("MCPReadStream.__anext__: waiting for message from read_queue")
             message = await read_queue.get()
+            logger.info(f"MCPReadStream.__anext__: received message type={type(message)}")
             if message is None:
+                logger.info("MCPReadStream.__anext__: message is None, raising StopAsyncIteration")
                 raise StopAsyncIteration
             return message
 
     class MCPWriteStream:
         async def __aenter__(self):
+            logger.info("MCPWriteStream.__aenter__")
             return self
 
         async def __aexit__(self, exc_type, exc_val, exc_tb):
+            logger.info("MCPWriteStream.__aexit__")
             pass
 
         async def send(self, message):
+            logger.info(f"MCPWriteStream.send: message type={type(message)}, putting to write_queue")
             await write_queue.put(message)
+            logger.info("MCPWriteStream.send: message put to write_queue")
 
     read_stream = MCPReadStream()
     write_stream = MCPWriteStream()
@@ -176,12 +186,14 @@ async def handle_sse(request: Request):
     async def run_server():
         """Запуск MCP сервера."""
         try:
+            logger.info("run_server: starting mcp_server.run()")
             # Запускаем сервер с нашими read/write потоками
             await mcp_server.run(
                 read_stream,
                 write_stream,
                 mcp_server.create_initialization_options()
             )
+            logger.info("run_server: mcp_server.run() completed")
         except Exception as e:
             logger.error(f"Error in server: {e}", exc_info=True)
 
@@ -192,30 +204,36 @@ async def handle_sse(request: Request):
         """Генератор SSE событий."""
         try:
             # Запускаем обработку сервера в фоне
+            logger.info("event_generator: creating run_server task")
             session_task = asyncio.create_task(run_server())
+            logger.info("event_generator: run_server task created")
 
             # Отправляем сообщения из очереди
             while True:
                 try:
+                    logger.info("event_generator: waiting for message from write_queue (timeout=30s)")
                     message = await asyncio.wait_for(write_queue.get(), timeout=30.0)
+                    logger.info(f"event_generator: got message from write_queue, type={type(message)}")
                     yield {
                         "event": "message",
                         "data": json.dumps(message)
                     }
+                    logger.info("event_generator: message sent to client")
                 except asyncio.TimeoutError:
                     # Отправляем keepalive
+                    logger.info("event_generator: timeout, sending keepalive ping")
                     yield {
                         "event": "ping",
                         "data": ""
                     }
 
         except asyncio.CancelledError:
-            logger.info("SSE подключение закрыто")
+            logger.info("event_generator: SSE подключение закрыто")
             session_task.cancel()
             if session_id in sessions:
                 del sessions[session_id]
         except Exception as e:
-            logger.error(f"Ошибка в SSE: {e}", exc_info=True)
+            logger.error(f"event_generator: Ошибка в SSE: {e}", exc_info=True)
             yield {
                 "event": "error",
                 "data": json.dumps({"error": str(e)})
@@ -227,8 +245,10 @@ async def handle_sse(request: Request):
 async def handle_message(request: Request):
     """Обработчик POST запросов с сообщениями."""
     session_id = request.headers.get("mcp-session-id", "default")
+    logger.info(f"handle_message: received POST request, session_id={session_id}")
 
     if session_id not in sessions:
+        logger.error(f"handle_message: session {session_id} not found")
         return Response(
             content=json.dumps({"error": "Invalid session"}),
             status_code=400,
@@ -238,9 +258,12 @@ async def handle_message(request: Request):
     _, read_queue, _ = sessions[session_id]
 
     body = await request.body()
+    logger.info(f"handle_message: body length={len(body)}")
     message = json.loads(body.decode())
+    logger.info(f"handle_message: parsed message type={type(message)}, keys={message.keys() if isinstance(message, dict) else 'N/A'}")
 
     await read_queue.put(message)
+    logger.info("handle_message: message put to read_queue")
 
     return Response(status_code=202)
 
