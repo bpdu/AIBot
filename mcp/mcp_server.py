@@ -14,7 +14,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, JSONRPCMessage
 from starlette.applications import Starlette
 from starlette.routing import Route, WebSocketRoute
 from starlette.requests import Request
@@ -129,8 +129,13 @@ async def root(request: Request):
 
 async def handle_websocket(websocket: WebSocket):
     """Обработчик WebSocket endpoint."""
-    await websocket.accept()
-    logger.info(f"Новое WebSocket подключение от {websocket.client}")
+    # Принимаем WebSocket с subprotocol "mcp"
+    subprotocol = None
+    if "mcp" in websocket.headers.get("sec-websocket-protocol", "").split(", "):
+        subprotocol = "mcp"
+
+    await websocket.accept(subprotocol=subprotocol)
+    logger.info(f"Новое WebSocket подключение от {websocket.client}, subprotocol={subprotocol}")
 
     # Создаём очереди для входящих и исходящих сообщений
     read_queue: asyncio.Queue = asyncio.Queue()
@@ -198,9 +203,9 @@ async def handle_websocket(websocket: WebSocket):
                 logger.info("read_from_websocket: waiting for message from client")
                 data = await websocket.receive_text()
                 logger.info(f"read_from_websocket: received {len(data)} bytes")
-                message = json.loads(data)
+                # MCP SDK ожидает JSONRPCMessage, который создается из JSON строки
                 logger.info(f"read_from_websocket: parsed message, putting to read_queue")
-                await read_queue.put(message)
+                await read_queue.put(JSONRPCMessage.model_validate_json(data))
                 logger.info("read_from_websocket: message put to read_queue")
         except Exception as e:
             logger.error(f"read_from_websocket: error {e}", exc_info=True)
@@ -216,7 +221,8 @@ async def handle_websocket(websocket: WebSocket):
                 if message is None:
                     logger.info("write_to_websocket: got None, stopping")
                     break
-                data = json.dumps(message)
+                # JSONRPCMessage имеет метод model_dump_json() для сериализации
+                data = message.model_dump_json(by_alias=True, exclude_none=True)
                 logger.info(f"write_to_websocket: sending {len(data)} bytes to client")
                 await websocket.send_text(data)
                 logger.info("write_to_websocket: message sent to client")
