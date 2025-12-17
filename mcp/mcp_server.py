@@ -12,7 +12,6 @@ import os
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
-from anyio.streams.memory import MemoryObjectSendStream, MemoryObjectReceiveStream
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -139,11 +138,11 @@ async def handle_websocket(websocket: WebSocket):
     logger.info(f"Новое WebSocket подключение от {websocket.client}, subprotocol={subprotocol}")
 
     # Создаём anyio memory streams для MCP SDK
-    from anyio.streams.memory import create_memory_object_stream
+    import anyio
 
     # Создаём пары потоков для двунаправленной коммуникации
-    read_stream_send, read_stream_receive = create_memory_object_stream()
-    write_stream_send, write_stream_receive = create_memory_object_stream()
+    read_stream_send, read_stream_receive = anyio.create_memory_object_stream(0)
+    write_stream_send, write_stream_receive = anyio.create_memory_object_stream(0)
 
     logger.info("Created anyio memory streams for MCP communication")
 
