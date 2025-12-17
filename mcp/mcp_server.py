@@ -128,7 +128,7 @@ async def root(request: Request):
 
 
 async def handle_websocket(websocket: WebSocket):
-    """Обработчик WebSocket endpoint."""
+    """Обработчик WebSocket endpoint для MCP протокола."""
     # Принимаем WebSocket с subprotocol "mcp"
     subprotocol = None
     if "mcp" in websocket.headers.get("sec-websocket-protocol", "").split(", "):
@@ -137,102 +137,141 @@ async def handle_websocket(websocket: WebSocket):
     await websocket.accept(subprotocol=subprotocol)
     logger.info(f"Новое WebSocket подключение от {websocket.client}, subprotocol={subprotocol}")
 
-    # Создаём anyio memory streams для MCP SDK
-    import anyio
-    from mcp.shared.message import JSONRPCMessage
-
-    # Создаём пары потоков для двунаправленной коммуникации
-    read_stream_send, read_stream_receive = anyio.create_memory_object_stream(0)
-    write_stream_send, write_stream_receive = anyio.create_memory_object_stream(0)
-
-    logger.info("Created anyio memory streams for MCP communication")
-
-    # Запускаем MCP сервер с этими потоками
-    async def run_server():
-        """Запуск MCP сервера."""
-        try:
-            logger.info("run_server: starting mcp_server.run()")
-            await mcp_server.run(
-                read_stream_receive,
-                write_stream_send,
-                mcp_server.create_initialization_options()
-            )
-            logger.info("run_server: mcp_server.run() completed")
-        except Exception as e:
-            logger.error(f"Error in server: {e}", exc_info=True)
-
-    # Задачи для чтения из WebSocket и записи в WebSocket
-    async def read_from_websocket():
-        """Читаем сообщения из WebSocket и отправляем в MCP read stream."""
-        try:
-            while True:
-                logger.info("read_from_websocket: waiting for message from client")
-                data = await websocket.receive_text()
-                logger.info(f"read_from_websocket: received {len(data)} bytes")
-                # MCP SDK ожидает JSONRPCMessage объекты
-                try:
-                    # Создаем JSONRPCMessage из JSON строки
-                    message = JSONRPCMessage.model_validate_json(data)
-                    logger.info(f"read_from_websocket: parsed message, sending to read_stream_send")
-                    await read_stream_send.send(message)
-                    logger.info("read_from_websocket: sent to MCP")
-                except Exception as e:
-                    logger.error(f"read_from_websocket: failed to parse message: {e}")
-        except Exception as e:
-            logger.error(f"read_from_websocket: error {e}", exc_info=True)
-        finally:
-            await read_stream_send.aclose()
-
-    async def write_to_websocket():
-        """Читаем из MCP write stream и отправляем в WebSocket."""
-        try:
-            while True:
-                logger.info("write_to_websocket: waiting for message from MCP")
-                message = await write_stream_receive.receive()
-                logger.info(f"write_to_websocket: got message type={type(message)}")
-                # Сериализуем JSONRPCMessage в JSON строку
-                if isinstance(message, JSONRPCMessage):
-                    json_str = message.model_dump_json()
-                elif isinstance(message, str):
-                    json_str = message
-                else:
-                    json_str = json.dumps(message)
-                logger.info(f"write_to_websocket: sending {len(json_str)} bytes to WebSocket")
-                await websocket.send_text(json_str)
-                logger.info("write_to_websocket: sent to client")
-        except Exception as e:
-            logger.error(f"write_to_websocket: error {e}", exc_info=True)
-        finally:
-            await write_stream_receive.aclose()
-
-    # Запускаем все задачи параллельно
     try:
-        logger.info("handle_websocket: starting all tasks")
-        await asyncio.gather(
-            run_server(),
-            read_from_websocket(),
-            write_to_websocket(),
-            return_exceptions=True
-        )
-    except Exception as e:
-        logger.error(f"handle_websocket: error in gather {e}", exc_info=True)
-    finally:
-        logger.info("handle_websocket: cleaning up")
-        # Закрыть потоки
-        try:
-            await read_stream_send.aclose()
-        except:
-            pass
-        try:
-            await write_stream_receive.aclose()
-        except:
-            pass
-        # Закрыть WebSocket если еще не закрыт
-        if websocket.client_state.name != "DISCONNECTED":
+        while True:
+            # Получаем сообщение от клиента
+            data = await websocket.receive_text()
+            logger.info(f"Received message: {data[:200]}")
+
             try:
-                await websocket.close()
+                request = json.loads(data)
+                method = request.get("method")
+                request_id = request.get("id")
+                params = request.get("params", {})
+
+                logger.info(f"JSON-RPC request: method={method}, id={request_id}")
+
+                # Обработка initialize
+                if method == "initialize":
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {
+                                "tools": {}
+                            },
+                            "serverInfo": {
+                                "name": "yandex-tracker-mcp-server",
+                                "version": "1.0.0"
+                            }
+                        }
+                    }
+                    await websocket.send_text(json.dumps(response))
+                    logger.info("Sent initialize response")
+
+                # Обработка tools/list
+                elif method == "tools/list":
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "get-tracker-tasks",
+                                    "description": "Получить список задач из Yandex Tracker",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {},
+                                        "required": []
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                    await websocket.send_text(json.dumps(response))
+                    logger.info("Sent tools/list response")
+
+                # Обработка tools/call
+                elif method == "tools/call":
+                    tool_name = params.get("name")
+                    logger.info(f"Calling tool: {tool_name}")
+
+                    if tool_name == "get-tracker-tasks":
+                        # Получаем задачи из Yandex Tracker
+                        tasks_json = get_tracker_tasks()
+
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": tasks_json
+                                    }
+                                ]
+                            }
+                        }
+                        await websocket.send_text(json.dumps(response))
+                        logger.info(f"Sent tool response: {len(tasks_json)} chars")
+                    else:
+                        # Неизвестный tool
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {
+                                "code": -32601,
+                                "message": f"Tool not found: {tool_name}"
+                            }
+                        }
+                        await websocket.send_text(json.dumps(response))
+
+                # Обработка notifications/initialized
+                elif method == "notifications/initialized":
+                    # Это notification, не требует ответа
+                    logger.info("Received initialized notification")
+
+                else:
+                    # Неизвестный метод
+                    logger.warning(f"Unknown method: {method}")
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Method not found: {method}"
+                        }
+                    }
+                    await websocket.send_text(json.dumps(response))
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON: {e}")
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32700,
+                        "message": "Parse error"
+                    }
+                }
+                await websocket.send_text(json.dumps(error_response))
             except Exception as e:
-                logger.error(f"Error closing websocket: {e}")
+                logger.error(f"Error processing request: {e}", exc_info=True)
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id") if 'request' in locals() else None,
+                    "error": {
+                        "code": -32603,
+                        "message": f"Internal error: {str(e)}"
+                    }
+                }
+                await websocket.send_text(json.dumps(error_response))
+
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}", exc_info=True)
+    finally:
+        logger.info("WebSocket connection closed")
 
 
 # Создаём приложение
