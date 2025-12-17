@@ -14,7 +14,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent, JSONRPCMessage
+from mcp.types import Tool, TextContent
 from starlette.applications import Starlette
 from starlette.routing import Route, WebSocketRoute
 from starlette.requests import Request
@@ -203,9 +203,9 @@ async def handle_websocket(websocket: WebSocket):
                 logger.info("read_from_websocket: waiting for message from client")
                 data = await websocket.receive_text()
                 logger.info(f"read_from_websocket: received {len(data)} bytes")
-                # MCP SDK ожидает JSONRPCMessage, который создается из JSON строки
-                logger.info(f"read_from_websocket: parsed message, putting to read_queue")
-                await read_queue.put(JSONRPCMessage.model_validate_json(data))
+                # MCP SDK ожидает сырые JSON строки, не объекты
+                logger.info(f"read_from_websocket: putting raw string to read_queue")
+                await read_queue.put(data)
                 logger.info("read_from_websocket: message put to read_queue")
         except Exception as e:
             logger.error(f"read_from_websocket: error {e}", exc_info=True)
@@ -221,10 +221,9 @@ async def handle_websocket(websocket: WebSocket):
                 if message is None:
                     logger.info("write_to_websocket: got None, stopping")
                     break
-                # JSONRPCMessage имеет метод model_dump_json() для сериализации
-                data = message.model_dump_json(by_alias=True, exclude_none=True)
-                logger.info(f"write_to_websocket: sending {len(data)} bytes to client")
-                await websocket.send_text(data)
+                # MCP SDK передает сырые JSON строки
+                logger.info(f"write_to_websocket: sending {len(message)} bytes to client")
+                await websocket.send_text(message)
                 logger.info("write_to_websocket: message sent to client")
         except Exception as e:
             logger.error(f"write_to_websocket: error {e}", exc_info=True)
