@@ -151,12 +151,11 @@ async def handle_websocket(websocket: WebSocket):
         """Запуск MCP сервера."""
         try:
             logger.info("run_server: starting mcp_server.run()")
-            async with read_stream_send, write_stream_receive:
-                await mcp_server.run(
-                    read_stream_receive,
-                    write_stream_send,
-                    mcp_server.create_initialization_options()
-                )
+            await mcp_server.run(
+                read_stream_receive,
+                write_stream_send,
+                mcp_server.create_initialization_options()
+            )
             logger.info("run_server: mcp_server.run() completed")
         except Exception as e:
             logger.error(f"Error in server: {e}", exc_info=True)
@@ -165,32 +164,42 @@ async def handle_websocket(websocket: WebSocket):
     async def read_from_websocket():
         """Читаем сообщения из WebSocket и отправляем в MCP read stream."""
         try:
-            async with read_stream_send:
-                while True:
-                    logger.info("read_from_websocket: waiting for message from client")
-                    data = await websocket.receive_text()
-                    logger.info(f"read_from_websocket: received {len(data)} bytes")
-                    # MCP SDK ожидает JSON строки
-                    logger.info(f"read_from_websocket: sending to read_stream_send")
-                    await read_stream_send.send(data)
+            while True:
+                logger.info("read_from_websocket: waiting for message from client")
+                data = await websocket.receive_text()
+                logger.info(f"read_from_websocket: received {len(data)} bytes")
+                # Парсим JSON и отправляем объект в MCP stream
+                try:
+                    json_obj = json.loads(data)
+                    logger.info(f"read_from_websocket: parsed JSON, sending to read_stream_send")
+                    await read_stream_send.send(json_obj)
                     logger.info("read_from_websocket: sent to MCP")
+                except json.JSONDecodeError as e:
+                    logger.error(f"read_from_websocket: failed to parse JSON: {e}")
         except Exception as e:
             logger.error(f"read_from_websocket: error {e}", exc_info=True)
+        finally:
+            await read_stream_send.aclose()
 
     async def write_to_websocket():
         """Читаем из MCP write stream и отправляем в WebSocket."""
         try:
-            async with write_stream_receive:
-                while True:
-                    logger.info("write_to_websocket: waiting for message from MCP")
-                    message = await write_stream_receive.receive()
-                    logger.info(f"write_to_websocket: got message type={type(message)}, length={len(message) if isinstance(message, str) else 'N/A'}")
-                    # MCP SDK передает сырые JSON строки
-                    logger.info(f"write_to_websocket: sending to WebSocket")
-                    await websocket.send_text(message)
-                    logger.info("write_to_websocket: sent to client")
+            while True:
+                logger.info("write_to_websocket: waiting for message from MCP")
+                message = await write_stream_receive.receive()
+                logger.info(f"write_to_websocket: got message type={type(message)}")
+                # Сериализуем в JSON строку и отправляем в WebSocket
+                if isinstance(message, str):
+                    json_str = message
+                else:
+                    json_str = json.dumps(message)
+                logger.info(f"write_to_websocket: sending {len(json_str)} bytes to WebSocket")
+                await websocket.send_text(json_str)
+                logger.info("write_to_websocket: sent to client")
         except Exception as e:
             logger.error(f"write_to_websocket: error {e}", exc_info=True)
+        finally:
+            await write_stream_receive.aclose()
 
     # Запускаем все задачи параллельно
     try:
@@ -198,13 +207,22 @@ async def handle_websocket(websocket: WebSocket):
         await asyncio.gather(
             run_server(),
             read_from_websocket(),
-            write_to_websocket()
+            write_to_websocket(),
+            return_exceptions=True
         )
     except Exception as e:
         logger.error(f"handle_websocket: error in gather {e}", exc_info=True)
     finally:
-        logger.info("handle_websocket: closing WebSocket connection")
-        await websocket.close()
+        logger.info("handle_websocket: cleaning up")
+        # Закрыть потоки
+        await read_stream_send.aclose()
+        await write_stream_receive.aclose()
+        # Закрыть WebSocket если еще не закрыт
+        if websocket.client_state.name != "DISCONNECTED":
+            try:
+                await websocket.close()
+            except Exception as e:
+                logger.error(f"Error closing websocket: {e}")
 
 
 # Создаём приложение
