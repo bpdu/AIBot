@@ -157,13 +157,15 @@ async def handle_sse(request: Request):
     # Запускаем MCP сервер с этими потоками
     async def run_server():
         """Запуск MCP сервера."""
-        async with mcp_server.run(
-            read_stream.read,
-            write_stream.send,
-            mcp_server.create_initialization_options()
-        ):
-            # Ждём завершения
-            await asyncio.Event().wait()
+        try:
+            # Запускаем сервер с нашими read/write потоками
+            await mcp_server.run(
+                read_stream.read,
+                write_stream.send,
+                mcp_server.create_initialization_options()
+            )
+        except Exception as e:
+            logger.error(f"Error in server: {e}", exc_info=True)
 
     # Сохраняем сессию
     sessions[session_id] = (None, read_queue, write_queue)
