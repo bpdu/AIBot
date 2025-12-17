@@ -1,10 +1,15 @@
 import logging
 import requests
 import json
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
 from dotenv import load_dotenv
 import os
+
+# MCP imports
+from mcp import ClientSession
+from mcp.client.sse import sse_client
 
 # Load environment variables from the secret files
 load_dotenv(dotenv_path='.secrets/bot-token.env')
@@ -27,6 +32,9 @@ DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions'
 # Using DeepSeek Chat - your paid model
 MODEL_NAME = 'deepseek-chat'  # Main DeepSeek model
 
+# MCP configuration
+MCP_SERVER_URL = "http://localhost:8080/mcp"
+
 def start(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
@@ -41,6 +49,10 @@ def help_command(update: Update, context: CallbackContext) -> None:
         '/stats - Показать статистику использования токенов и сжатия\n'
         '/compress - Сжать историю разговора вручную\n'
         '/clear - Очистить историю разговора\n\n'
+        '📋 Yandex Tracker интеграция:\n'
+        'Спросите про "задачи" или "tracker" - бот получит актуальный список задач через MCP!\n\n'
+        '⏰ Автоматические уведомления:\n'
+        'Каждые 15 минут бот присылает сводку задач из Yandex Tracker\n\n'
         '💡 Автосжатие: Каждые 10 сообщений история автоматически сжимается для экономии токенов!\n\n'
         'Просто отправьте мне вопрос, и я отвечу с помощью модели DeepSeek Chat!'
     )
@@ -150,6 +162,11 @@ def ask_question(update: Update, context: CallbackContext) -> None:
 
     user_question = update.message.text
 
+    # Сохранить chat_id при первом сообщении
+    if 'admin_chat_id' not in context.bot_data:
+        context.bot_data['admin_chat_id'] = update.message.chat_id
+        logger.info(f"Saved admin_chat_id: {update.message.chat_id}")
+
     # Initialize conversation history and current date in context if it doesn't exist
     if 'conversation_history' not in context.user_data:
         context.user_data['conversation_history'] = []
@@ -171,6 +188,31 @@ def ask_question(update: Update, context: CallbackContext) -> None:
     # Increment message counter
     context.user_data['message_counter'] += 1
     current_message_num = context.user_data['message_counter']
+
+    # Проверка на ключевые слова про задачи из Tracker
+    keywords = ["задач", "task", "tracker", "issue", "трекер"]
+    message_lower = user_question.lower()
+
+    if any(keyword in message_lower for keyword in keywords):
+        logger.info("Detected tracker-related question, calling MCP...")
+        try:
+            tasks_json = call_mcp_tool_sync("get-tracker-tasks")
+
+            if tasks_json:
+                # Добавить задачи в контекст
+                tracker_context = {
+                    "role": "system",
+                    "content": f"Список задач из Yandex Tracker:\n{tasks_json}\n\nИспользуй эти данные для ответа на вопрос пользователя."
+                }
+                # Вставить в начало истории
+                context.user_data['conversation_history'].insert(0, tracker_context)
+                logger.info("Added tracker tasks to conversation context")
+            else:
+                logger.error("Failed to get tasks from MCP")
+
+        except Exception as e:
+            logger.error(f"Error calling MCP: {e}")
+            update.message.reply_text("⚠️ Не удалось получить задачи из Tracker")
 
     # Add user message to conversation history
     context.user_data['conversation_history'].append({
@@ -419,6 +461,87 @@ def call_deepseek_api(messages) -> tuple:
         error_msg = f"Sorry, I encountered an error while processing your request: {str(e)}"
         return (error_msg, {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0})
 
+# MCP Client functions
+async def call_mcp_tool(tool_name: str, arguments: dict = None):
+    """Вызов MCP tool через SSE и получение результата."""
+    headers = {
+        "Accept": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive"
+    }
+
+    try:
+        async with sse_client(MCP_SERVER_URL, headers=headers) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                result = await session.call_tool(tool_name, arguments or {})
+
+                # Извлечь текст из результата
+                if result.content and len(result.content) > 0:
+                    return result.content[0].text
+                return None
+    except Exception as e:
+        logger.error(f"Error calling MCP tool: {e}")
+        return None
+
+
+def call_mcp_tool_sync(tool_name: str, arguments: dict = None):
+    """Синхронная обертка для вызова async MCP tool."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(call_mcp_tool(tool_name, arguments))
+    finally:
+        loop.close()
+
+
+def send_tasks_summary(context: CallbackContext):
+    """Отправка сводки задач каждые 15 минут."""
+    if 'admin_chat_id' not in context.bot_data:
+        logger.warning("admin_chat_id not set, skipping summary")
+        return
+
+    try:
+        # Получаем задачи через MCP
+        tasks_json = call_mcp_tool_sync("get-tracker-tasks")
+
+        if not tasks_json:
+            logger.error("Failed to get tasks from MCP")
+            return
+
+        # Парсим JSON
+        import json
+        tasks = json.loads(tasks_json)
+
+        # Форматируем сводку
+        if isinstance(tasks, dict) and 'error' in tasks:
+            summary = f"⚠️ Ошибка получения задач:\n{tasks['error']}"
+        elif isinstance(tasks, list):
+            if len(tasks) == 0:
+                summary = "📋 Задач в Yandex Tracker нет"
+            else:
+                summary = f"📋 Сводка задач из Yandex Tracker ({len(tasks)} шт.):\n\n"
+                for task in tasks[:10]:  # Показываем максимум 10 задач
+                    summary += f"🔹 {task.get('key')}: {task.get('summary')}\n"
+                    summary += f"   Статус: {task.get('status')}\n"
+                    summary += f"   Исполнитель: {task.get('assignee')}\n\n"
+
+                if len(tasks) > 10:
+                    summary += f"\n... и ещё {len(tasks) - 10} задач(и)"
+        else:
+            summary = f"📋 Получены данные:\n{tasks_json[:500]}"
+
+        # Отправляем
+        context.bot.send_message(
+            chat_id=context.bot_data['admin_chat_id'],
+            text=summary
+        )
+        logger.info(f"Sent tasks summary to {context.bot_data['admin_chat_id']}")
+
+    except Exception as e:
+        logger.error(f"Error in send_tasks_summary: {e}", exc_info=True)
+
+
 def error_handler(update: Update, context: CallbackContext) -> None:
     """Log errors caused by updates."""
     logger.error(f"Update {update} caused error {context.error}")
@@ -445,6 +568,11 @@ def main() -> None:
     
     # Add error handler
     dispatcher.add_error_handler(error_handler)
+
+    # Add periodic job for tasks summary (every 15 minutes = 900 seconds)
+    job_queue = updater.job_queue
+    job_queue.run_repeating(send_tasks_summary, interval=900, first=900)
+    logger.info("Scheduled tasks summary job (every 15 minutes)")
 
     # Start the Bot
     updater.start_polling()
