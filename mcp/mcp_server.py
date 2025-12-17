@@ -2,7 +2,7 @@
 MCP Server с Yandex Tracker API
 День 13: Планировщик + MCP
 
-HTTP/SSE сервер для получения задач из Yandex Tracker.
+WebSocket сервер для получения задач из Yandex Tracker.
 """
 
 import asyncio
@@ -11,16 +11,15 @@ import logging
 import os
 import requests
 from datetime import datetime
-from typing import Any
 from dotenv import load_dotenv
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
 from starlette.requests import Request
 from starlette.responses import Response
-from sse_starlette import EventSourceResponse
+from starlette.websockets import WebSocket
 import uvicorn
 
 # Загрузка переменных окружения
@@ -114,10 +113,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         )]
 
 
-# Хранилище активных сессий
-sessions: dict[str, tuple[Any, asyncio.Queue, asyncio.Queue]] = {}
-
-
 async def root(request: Request):
     """Корневой endpoint."""
     return Response(
@@ -132,11 +127,10 @@ async def root(request: Request):
     )
 
 
-async def handle_sse(request: Request):
-    """Обработчик SSE endpoint."""
-    session_id = request.headers.get("mcp-session-id", "default")
-
-    logger.info(f"Новое SSE подключение, session_id={session_id}")
+async def handle_websocket(websocket: WebSocket):
+    """Обработчик WebSocket endpoint."""
+    await websocket.accept()
+    logger.info(f"Новое WebSocket подключение от {websocket.client}")
 
     # Создаём очереди для входящих и исходящих сообщений
     read_queue: asyncio.Queue = asyncio.Queue()
@@ -187,7 +181,6 @@ async def handle_sse(request: Request):
         """Запуск MCP сервера."""
         try:
             logger.info("run_server: starting mcp_server.run()")
-            # Запускаем сервер с нашими read/write потоками
             await mcp_server.run(
                 read_stream,
                 write_stream,
@@ -197,97 +190,73 @@ async def handle_sse(request: Request):
         except Exception as e:
             logger.error(f"Error in server: {e}", exc_info=True)
 
-    # Сохраняем сессию
-    sessions[session_id] = (None, read_queue, write_queue)
-
-    async def event_generator():
-        """Генератор SSE событий."""
+    # Задачи для чтения из WebSocket и записи в WebSocket
+    async def read_from_websocket():
+        """Читаем сообщения из WebSocket и кладем в read_queue."""
         try:
-            # Запускаем обработку сервера в фоне
-            logger.info("event_generator: creating run_server task")
-            session_task = asyncio.create_task(run_server())
-            logger.info("event_generator: run_server task created")
-
-            # Отправляем сообщения из очереди
             while True:
-                try:
-                    logger.info("event_generator: waiting for message from write_queue (timeout=30s)")
-                    message = await asyncio.wait_for(write_queue.get(), timeout=30.0)
-                    logger.info(f"event_generator: got message from write_queue, type={type(message)}")
-                    yield {
-                        "event": "message",
-                        "data": json.dumps(message)
-                    }
-                    logger.info("event_generator: message sent to client")
-                except asyncio.TimeoutError:
-                    # Отправляем keepalive
-                    logger.info("event_generator: timeout, sending keepalive ping")
-                    yield {
-                        "event": "ping",
-                        "data": ""
-                    }
-
-        except asyncio.CancelledError:
-            logger.info("event_generator: SSE подключение закрыто")
-            session_task.cancel()
-            if session_id in sessions:
-                del sessions[session_id]
+                logger.info("read_from_websocket: waiting for message from client")
+                data = await websocket.receive_text()
+                logger.info(f"read_from_websocket: received {len(data)} bytes")
+                message = json.loads(data)
+                logger.info(f"read_from_websocket: parsed message, putting to read_queue")
+                await read_queue.put(message)
+                logger.info("read_from_websocket: message put to read_queue")
         except Exception as e:
-            logger.error(f"event_generator: Ошибка в SSE: {e}", exc_info=True)
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": str(e)})
-            }
+            logger.error(f"read_from_websocket: error {e}", exc_info=True)
+            await read_queue.put(None)  # Сигнал завершения
 
-    return EventSourceResponse(event_generator())
+    async def write_to_websocket():
+        """Читаем из write_queue и отправляем в WebSocket."""
+        try:
+            while True:
+                logger.info("write_to_websocket: waiting for message from write_queue")
+                message = await write_queue.get()
+                logger.info(f"write_to_websocket: got message type={type(message)}")
+                if message is None:
+                    logger.info("write_to_websocket: got None, stopping")
+                    break
+                data = json.dumps(message)
+                logger.info(f"write_to_websocket: sending {len(data)} bytes to client")
+                await websocket.send_text(data)
+                logger.info("write_to_websocket: message sent to client")
+        except Exception as e:
+            logger.error(f"write_to_websocket: error {e}", exc_info=True)
 
-
-async def handle_message(request: Request):
-    """Обработчик POST запросов с сообщениями."""
-    session_id = request.headers.get("mcp-session-id", "default")
-    logger.info(f"handle_message: received POST request, session_id={session_id}")
-
-    if session_id not in sessions:
-        logger.error(f"handle_message: session {session_id} not found")
-        return Response(
-            content=json.dumps({"error": "Invalid session"}),
-            status_code=400,
-            media_type="application/json"
+    # Запускаем все задачи параллельно
+    try:
+        logger.info("handle_websocket: starting all tasks")
+        await asyncio.gather(
+            run_server(),
+            read_from_websocket(),
+            write_to_websocket()
         )
-
-    _, read_queue, _ = sessions[session_id]
-
-    body = await request.body()
-    logger.info(f"handle_message: body length={len(body)}")
-    message = json.loads(body.decode())
-    logger.info(f"handle_message: parsed message type={type(message)}, keys={message.keys() if isinstance(message, dict) else 'N/A'}")
-
-    await read_queue.put(message)
-    logger.info("handle_message: message put to read_queue")
-
-    return Response(status_code=202)
+    except Exception as e:
+        logger.error(f"handle_websocket: error in gather {e}", exc_info=True)
+    finally:
+        logger.info("handle_websocket: closing WebSocket connection")
+        await websocket.close()
 
 
 # Создаём приложение
 app = Starlette(
     routes=[
         Route("/", root),
-        Route("/mcp", handle_sse),
-        Route("/mcp/message", handle_message, methods=["POST"]),
+        WebSocketRoute("/mcp", handle_websocket),
     ]
 )
 
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("Yandex Tracker MCP Server запущен (HTTP/SSE)")
+    logger.info("Yandex Tracker MCP Server запущен (WebSocket)")
     logger.info("=" * 60)
     logger.info(f"Tracker Token: {'✓ configured' if TRACKER_TOKEN else '✗ missing'}")
     logger.info(f"Tracker Org ID: {TRACKER_ORG_ID if TRACKER_ORG_ID else '✗ missing'}")
     logger.info("Доступные инструменты: 1")
     logger.info("  - get-tracker-tasks: Получить список задач из Yandex Tracker")
     logger.info("=" * 60)
-    logger.info("Listening on http://localhost:8080")
+    logger.info("WebSocket endpoint: ws://localhost:8080/mcp")
     logger.info("=" * 60)
 
     uvicorn.run(app, host="0.0.0.0", port=8080)

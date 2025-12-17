@@ -9,7 +9,7 @@ import os
 
 # MCP imports
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.websocket import websocket_client
 
 # Load environment variables from the secret files
 load_dotenv(dotenv_path='.secrets/bot-token.env')
@@ -33,7 +33,7 @@ DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions'
 MODEL_NAME = 'deepseek-chat'  # Main DeepSeek model
 
 # MCP configuration
-MCP_SERVER_URL = "http://localhost:8080/mcp"
+MCP_SERVER_URL = "ws://localhost:8080/mcp"
 
 def start(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /start is issued."""
@@ -468,17 +468,11 @@ def call_deepseek_api(messages) -> tuple:
 
 # MCP Client functions
 async def call_mcp_tool(tool_name: str, arguments: dict = None):
-    """Вызов MCP tool через SSE и получение результата."""
-    headers = {
-        "Accept": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive"
-    }
-
+    """Вызов MCP tool через WebSocket и получение результата."""
     try:
         logger.info(f"Connecting to MCP server at {MCP_SERVER_URL}")
-        async with sse_client(MCP_SERVER_URL, headers=headers) as (read, write):
-            logger.info("SSE connection established")
+        async with websocket_client(MCP_SERVER_URL) as (read, write):
+            logger.info("WebSocket connection established")
             async with ClientSession(read, write) as session:
                 logger.info("MCP session created")
 
