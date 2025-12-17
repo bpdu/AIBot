@@ -139,6 +139,7 @@ async def handle_websocket(websocket: WebSocket):
 
     # Создаём anyio memory streams для MCP SDK
     import anyio
+    from mcp.shared.message import JSONRPCMessage
 
     # Создаём пары потоков для двунаправленной коммуникации
     read_stream_send, read_stream_receive = anyio.create_memory_object_stream(0)
@@ -168,14 +169,15 @@ async def handle_websocket(websocket: WebSocket):
                 logger.info("read_from_websocket: waiting for message from client")
                 data = await websocket.receive_text()
                 logger.info(f"read_from_websocket: received {len(data)} bytes")
-                # Парсим JSON и отправляем объект в MCP stream
+                # MCP SDK ожидает JSONRPCMessage объекты
                 try:
-                    json_obj = json.loads(data)
-                    logger.info(f"read_from_websocket: parsed JSON, sending to read_stream_send")
-                    await read_stream_send.send(json_obj)
+                    # Создаем JSONRPCMessage из JSON строки
+                    message = JSONRPCMessage.model_validate_json(data)
+                    logger.info(f"read_from_websocket: parsed message, sending to read_stream_send")
+                    await read_stream_send.send(message)
                     logger.info("read_from_websocket: sent to MCP")
-                except json.JSONDecodeError as e:
-                    logger.error(f"read_from_websocket: failed to parse JSON: {e}")
+                except Exception as e:
+                    logger.error(f"read_from_websocket: failed to parse message: {e}")
         except Exception as e:
             logger.error(f"read_from_websocket: error {e}", exc_info=True)
         finally:
@@ -188,8 +190,10 @@ async def handle_websocket(websocket: WebSocket):
                 logger.info("write_to_websocket: waiting for message from MCP")
                 message = await write_stream_receive.receive()
                 logger.info(f"write_to_websocket: got message type={type(message)}")
-                # Сериализуем в JSON строку и отправляем в WebSocket
-                if isinstance(message, str):
+                # Сериализуем JSONRPCMessage в JSON строку
+                if isinstance(message, JSONRPCMessage):
+                    json_str = message.model_dump_json()
+                elif isinstance(message, str):
                     json_str = message
                 else:
                     json_str = json.dumps(message)
@@ -215,8 +219,14 @@ async def handle_websocket(websocket: WebSocket):
     finally:
         logger.info("handle_websocket: cleaning up")
         # Закрыть потоки
-        await read_stream_send.aclose()
-        await write_stream_receive.aclose()
+        try:
+            await read_stream_send.aclose()
+        except:
+            pass
+        try:
+            await write_stream_receive.aclose()
+        except:
+            pass
         # Закрыть WebSocket если еще не закрыт
         if websocket.client_state.name != "DISCONNECTED":
             try:
