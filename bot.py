@@ -513,7 +513,7 @@ def call_mcp_tool_sync(tool_name: str, arguments: dict = None):
 
 
 def send_tasks_summary(context: CallbackContext):
-    """Отправка сводки задач каждые 30 минут."""
+    """Отправка сводки задач каждые N минут."""
     if 'admin_chat_id' not in context.bot_data:
         logger.warning("admin_chat_id not set, skipping summary")
         return
@@ -585,9 +585,9 @@ def main() -> None:
     # Add error handler
     dispatcher.add_error_handler(error_handler)
 
-    # Add periodic job for tasks summary (every 10 minutes = 600 seconds)
+    # Add periodic job for tasks summary (every 2 minutes = 120 seconds)
     job_queue = updater.job_queue
-    job_queue.run_repeating(send_tasks_summary, interval=600, first=600)
+    job_queue.run_repeating(send_tasks_summary, interval=, first=600)
     logger.info("Scheduled tasks summary job (every 10 minutes)")
 
     # Start the Bot
