@@ -1,9 +1,9 @@
 """
-MCP Server с Yandex Tracker API + Docker Monitoring
+MCP Server с Yandex Tracker API + Host Monitoring
 День 13: Планировщик + MCP
-День 15: Environment - Агент + Docker
+День 15: Environment - Мониторинг хоста
 
-WebSocket сервер для получения задач из Yandex Tracker и запуска Docker мониторинга.
+WebSocket сервер для получения задач из Yandex Tracker и сбора метрик хоста.
 """
 
 import asyncio
@@ -23,14 +23,6 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.websockets import WebSocket
 import uvicorn
-
-# Docker SDK для управления контейнерами
-try:
-    import docker
-    DOCKER_AVAILABLE = True
-except ImportError:
-    DOCKER_AVAILABLE = False
-    logging.warning("Docker SDK not installed. Monitoring tool will not work.")
 
 # Загрузка переменных окружения
 # Получаем путь к директории проекта (на уровень выше mcp/)
@@ -108,107 +100,123 @@ def get_tracker_tasks():
         return json.dumps({"error": str(e)})
 
 
-def start_monitoring_container(port=8001):
+def get_host_metrics():
     """
-    Запустить Docker контейнер с мониторингом хоста.
-
-    Args:
-        port: Порт для веб-интерфейса (по умолчанию 8001)
+    Собрать метрики хоста (CPU, RAM, Disk, Uptime, Temperature).
 
     Returns:
-        JSON строка с URL для доступа к мониторингу или ошибкой
+        JSON строка с метриками хоста
     """
-    if not DOCKER_AVAILABLE:
-        return json.dumps({
-            "error": "Docker SDK not installed. Install with: pip install docker"
-        })
-
     try:
-        logger.info(f"Starting monitoring container on port {port}...")
+        logger.info("Collecting host metrics...")
 
-        # Подключение к Docker
-        client = docker.from_env()
-
-        # Проверить, не запущен ли уже контейнер
-        container_name = "aibot-monitor"
+        # Импортируем psutil локально
         try:
-            existing = client.containers.get(container_name)
-            # Если контейнер существует, остановить его
-            logger.info(f"Stopping existing container: {container_name}")
-            existing.stop()
-            existing.remove()
-        except docker.errors.NotFound:
+            import psutil
+            import platform
+        except ImportError:
+            return json.dumps({
+                "error": "psutil not installed. Install with: pip install psutil"
+            })
+
+        # CPU метрики
+        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_count = psutil.cpu_count()
+        cpu_freq = psutil.cpu_freq()
+        cpu_freq_current = int(cpu_freq.current) if cpu_freq else 0
+
+        # Memory метрики
+        mem = psutil.virtual_memory()
+        mem_total_gb = round(mem.total / (1024**3), 2)
+        mem_used_gb = round(mem.used / (1024**3), 2)
+        mem_percent = mem.percent
+
+        # Disk метрики
+        disk = psutil.disk_usage('/')
+        disk_total_gb = round(disk.total / (1024**3), 2)
+        disk_used_gb = round(disk.used / (1024**3), 2)
+        disk_percent = disk.percent
+
+        # Uptime
+        from datetime import datetime, timedelta
+        boot_time = datetime.fromtimestamp(psutil.boot_time())
+        uptime_seconds = (datetime.now() - boot_time).total_seconds()
+
+        days = int(uptime_seconds // 86400)
+        hours = int((uptime_seconds % 86400) // 3600)
+        minutes = int((uptime_seconds % 3600) // 60)
+
+        if days > 0:
+            uptime_str = f"{days}д {hours}ч {minutes}м"
+        else:
+            uptime_str = f"{hours}ч {minutes}м"
+
+        # System info
+        hostname = socket.gethostname()
+        platform_info = f"{platform.system()} {platform.release()}"
+        architecture = platform.machine()
+
+        # Temperature (если доступно)
+        temperature = "N/A"
+        try:
+            temps = psutil.sensors_temperatures()
+            if temps:
+                for name, entries in temps.items():
+                    if 'coretemp' in name.lower() or 'cpu' in name.lower():
+                        if entries:
+                            temperature = f"{entries[0].current:.1f}°C"
+                            break
+        except:
             pass
 
-        # Получить IP адрес хоста
-        hostname = socket.gethostname()
+        # IP адрес
         try:
-            host_ip = socket.gethostbyname(hostname)
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip_address = s.getsockname()[0]
+            s.close()
         except:
-            host_ip = "localhost"
+            ip_address = "N/A"
 
-        # Построить образ из Dockerfile
-        project_dir = pathlib.Path(__file__).parent.parent
-        dockerfile_dir = project_dir / 'docker' / 'monitoring'
-
-        logger.info(f"Building Docker image from {dockerfile_dir}...")
-
-        # Проверить наличие Dockerfile
-        if not (dockerfile_dir / 'Dockerfile').exists():
-            return json.dumps({
-                "error": f"Dockerfile not found at {dockerfile_dir}/Dockerfile"
-            })
-
-        # Построить образ
-        try:
-            image, build_logs = client.images.build(
-                path=str(dockerfile_dir),
-                tag="aibot-monitoring:latest",
-                rm=True
-            )
-            logger.info("Docker image built successfully")
-        except docker.errors.BuildError as e:
-            logger.error(f"Error building Docker image: {e}")
-            return json.dumps({
-                "error": f"Failed to build Docker image: {str(e)}"
-            })
-
-        # Запустить контейнер
-        logger.info("Starting container...")
-        container = client.containers.run(
-            "aibot-monitoring:latest",
-            name=container_name,
-            ports={'8001/tcp': port},
-            detach=True,
-            remove=True,  # Автоматически удалить после остановки
-            pid_mode='host'  # Доступ к процессам хоста для метрик
-        )
-
-        logger.info(f"Container started: {container.id[:12]}")
-
-        # Формирование URL
-        monitoring_url = f"http://{host_ip}:{port}/health"
-
-        result = {
+        # Формирование результата
+        metrics = {
             "success": True,
-            "url": monitoring_url,
-            "container_id": container.id[:12],
-            "container_name": container_name,
-            "port": port,
-            "message": f"Мониторинг запущен! Откройте в браузере: {monitoring_url}"
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "cpu": {
+                "percent": cpu_percent,
+                "cores": cpu_count,
+                "frequency_mhz": cpu_freq_current
+            },
+            "memory": {
+                "percent": mem_percent,
+                "used_gb": mem_used_gb,
+                "total_gb": mem_total_gb
+            },
+            "disk": {
+                "percent": disk_percent,
+                "used_gb": disk_used_gb,
+                "total_gb": disk_total_gb
+            },
+            "uptime": {
+                "formatted": uptime_str,
+                "boot_time": boot_time.strftime("%Y-%m-%d %H:%M:%S")
+            },
+            "system": {
+                "hostname": hostname,
+                "platform": platform_info,
+                "architecture": architecture,
+                "ip_address": ip_address,
+                "temperature": temperature
+            }
         }
 
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        logger.info("Metrics collected successfully")
+        return json.dumps(metrics, ensure_ascii=False, indent=2)
 
-    except docker.errors.APIError as e:
-        logger.error(f"Docker API error: {e}")
-        return json.dumps({
-            "error": f"Docker API error: {str(e)}"
-        })
     except Exception as e:
-        logger.error(f"Error starting monitoring container: {e}", exc_info=True)
+        logger.error(f"Error collecting metrics: {e}", exc_info=True)
         return json.dumps({
-            "error": f"Failed to start monitoring: {str(e)}"
+            "error": f"Failed to collect metrics: {str(e)}"
         })
 
 
@@ -226,17 +234,11 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
-            name="start-monitoring",
-            description="Запустить Docker контейнер с мониторингом хоста (метрики CPU, RAM, Disk, Temperature)",
+            name="get-host-metrics",
+            description="Получить метрики хоста (CPU, RAM, Disk, Uptime, Temperature, System info)",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "port": {
-                        "type": "integer",
-                        "description": "Порт для веб-интерфейса мониторинга (по умолчанию 8001)",
-                        "default": 8001
-                    }
-                },
+                "properties": {},
                 "required": []
             }
         )
@@ -253,9 +255,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             type="text",
             text=tasks_json
         )]
-    elif name == "start-monitoring":
-        port = arguments.get("port", 8001)
-        result_json = start_monitoring_container(port=port)
+    elif name == "get-host-metrics":
+        result_json = get_host_metrics()
         return [TextContent(
             type="text",
             text=result_json
@@ -341,16 +342,11 @@ async def handle_websocket(websocket: WebSocket):
                                     }
                                 },
                                 {
-                                    "name": "start-monitoring",
-                                    "description": "Запустить Docker контейнер с мониторингом хоста (метрики CPU, RAM, Disk, Temperature)",
+                                    "name": "get-host-metrics",
+                                    "description": "Получить метрики хоста (CPU, RAM, Disk, Uptime, Temperature, System info)",
                                     "inputSchema": {
                                         "type": "object",
-                                        "properties": {
-                                            "port": {
-                                                "type": "integer",
-                                                "description": "Порт для веб-интерфейса мониторинга (по умолчанию 8001)"
-                                            }
-                                        },
+                                        "properties": {},
                                         "required": []
                                     }
                                 }
@@ -383,11 +379,9 @@ async def handle_websocket(websocket: WebSocket):
                         }
                         await websocket.send_text(json.dumps(response))
                         logger.info(f"Sent tool response: {len(tasks_json)} chars")
-                    elif tool_name == "start-monitoring":
-                        # Запуск Docker контейнера с мониторингом
-                        tool_arguments = params.get("arguments", {})
-                        port = tool_arguments.get("port", 8001)
-                        monitoring_result = start_monitoring_container(port=port)
+                    elif tool_name == "get-host-metrics":
+                        # Получение метрик хоста
+                        monitoring_result = get_host_metrics()
 
                         response = {
                             "jsonrpc": "2.0",
@@ -402,7 +396,7 @@ async def handle_websocket(websocket: WebSocket):
                             }
                         }
                         await websocket.send_text(json.dumps(response))
-                        logger.info(f"Sent monitoring tool response: {len(monitoring_result)} chars")
+                        logger.info(f"Sent host metrics response: {len(monitoring_result)} chars")
                     else:
                         # Неизвестный tool
                         response = {
@@ -474,14 +468,13 @@ app = Starlette(
 if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("MCP Server запущен (WebSocket)")
-    logger.info("День 13: Планировщик + MCP | День 15: Environment - Агент + Docker")
+    logger.info("День 13: Планировщик + MCP | День 15: Environment - Мониторинг")
     logger.info("=" * 60)
     logger.info(f"Tracker Token: {'✓ configured' if TRACKER_TOKEN else '✗ missing'}")
     logger.info(f"Tracker Org ID: {TRACKER_ORG_ID if TRACKER_ORG_ID else '✗ missing'}")
-    logger.info(f"Docker SDK: {'✓ available' if DOCKER_AVAILABLE else '✗ missing (pip install docker)'}")
     logger.info("Доступные инструменты: 2")
     logger.info("  1. get-tracker-tasks: Получить список задач из Yandex Tracker")
-    logger.info("  2. start-monitoring: Запустить Docker контейнер с мониторингом хоста")
+    logger.info("  2. get-host-metrics: Получить метрики хоста (CPU, RAM, Disk, Uptime)")
     logger.info("=" * 60)
     logger.info("WebSocket endpoint: ws://localhost:8080/mcp")
     logger.info("=" * 60)

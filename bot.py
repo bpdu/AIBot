@@ -272,56 +272,80 @@ def ask_question(update: Update, context: CallbackContext) -> None:
     monitoring_keyword_found = any(keyword in message_lower for keyword in monitoring_keywords)
 
     if monitoring_keyword_found:
-        logger.info("Detected monitoring-related question, starting Docker monitoring...")
-        update.message.reply_text("🔄 Запускаю мониторинг хоста...")
+        logger.info("Detected monitoring-related question, collecting host metrics...")
+        update.message.reply_text("🔄 Собираю метрики хоста...")
 
         try:
-            # Вызвать MCP tool для запуска мониторинга
+            # Вызвать MCP tool для получения метрик
             monitoring_result_json = call_mcp_tool_sync_on_server(
                 MCP_SERVER_URL,
-                "start-monitoring",
-                {"port": 8001}
+                "get-host-metrics"
             )
 
             if not monitoring_result_json:
-                update.message.reply_text("⚠️ Не удалось запустить мониторинг. MCP сервер недоступен.")
+                update.message.reply_text("⚠️ Не удалось получить метрики. MCP сервер недоступен.")
                 return
 
             # Парсим результат
             try:
-                monitoring_result = json.loads(monitoring_result_json)
+                metrics = json.loads(monitoring_result_json)
 
-                if monitoring_result.get("success"):
-                    # Успешно запущен
-                    url = monitoring_result.get("url")
-                    container_id = monitoring_result.get("container_id")
-                    port = monitoring_result.get("port")
+                if metrics.get("success"):
+                    # Форматируем красивое сообщение с метриками
+                    cpu = metrics.get("cpu", {})
+                    memory = metrics.get("memory", {})
+                    disk = metrics.get("disk", {})
+                    uptime = metrics.get("uptime", {})
+                    system = metrics.get("system", {})
+                    timestamp = metrics.get("timestamp", "")
 
-                    success_msg = (
-                        f"✅ Мониторинг запущен!\n\n"
-                        f"🌐 URL: {url}\n"
-                        f"🐳 Container: {container_id}\n"
-                        f"🔌 Port: {port}\n\n"
-                        f"📊 Откройте ссылку в браузере для просмотра метрик.\n"
-                        f"Страница автоматически обновляется каждые 5 секунд."
+                    # Определяем эмодзи для уровня загрузки
+                    cpu_emoji = "🟢" if cpu.get("percent", 0) < 50 else "🟡" if cpu.get("percent", 0) < 80 else "🔴"
+                    mem_emoji = "🟢" if memory.get("percent", 0) < 50 else "🟡" if memory.get("percent", 0) < 80 else "🔴"
+                    disk_emoji = "🟢" if disk.get("percent", 0) < 50 else "🟡" if disk.get("percent", 0) < 80 else "🔴"
+
+                    metrics_msg = (
+                        f"📊 Метрики хоста\n"
+                        f"{'=' * 30}\n"
+                        f"🕐 {timestamp}\n\n"
+                        f"{cpu_emoji} CPU:\n"
+                        f"  • Загрузка: {cpu.get('percent', 0):.1f}%\n"
+                        f"  • Ядра: {cpu.get('cores', 'N/A')}\n"
+                        f"  • Частота: {cpu.get('frequency_mhz', 0)} MHz\n\n"
+                        f"{mem_emoji} Память:\n"
+                        f"  • Загрузка: {memory.get('percent', 0):.1f}%\n"
+                        f"  • Использовано: {memory.get('used_gb', 0):.2f} GB\n"
+                        f"  • Всего: {memory.get('total_gb', 0):.2f} GB\n\n"
+                        f"{disk_emoji} Диск:\n"
+                        f"  • Загрузка: {disk.get('percent', 0):.1f}%\n"
+                        f"  • Использовано: {disk.get('used_gb', 0):.2f} GB\n"
+                        f"  • Всего: {disk.get('total_gb', 0):.2f} GB\n\n"
+                        f"⏱️ Uptime: {uptime.get('formatted', 'N/A')}\n"
+                        f"🔄 Запуск: {uptime.get('boot_time', 'N/A')}\n\n"
+                        f"💻 Система:\n"
+                        f"  • Хост: {system.get('hostname', 'N/A')}\n"
+                        f"  • ОС: {system.get('platform', 'N/A')}\n"
+                        f"  • Архитектура: {system.get('architecture', 'N/A')}\n"
+                        f"  • IP: {system.get('ip_address', 'N/A')}\n"
+                        f"  • Температура: {system.get('temperature', 'N/A')}"
                     )
-                    update.message.reply_text(success_msg)
+                    update.message.reply_text(metrics_msg)
                 else:
-                    # Ошибка при запуске
-                    error = monitoring_result.get("error", "Unknown error")
-                    update.message.reply_text(f"⚠️ Ошибка при запуске мониторинга: {error}")
+                    # Ошибка при получении метрик
+                    error = metrics.get("error", "Unknown error")
+                    update.message.reply_text(f"⚠️ Ошибка при получении метрик: {error}")
 
             except json.JSONDecodeError:
                 # Не JSON ответ
-                update.message.reply_text(f"Результат: {monitoring_result_json}")
+                update.message.reply_text(f"Результат: {monitoring_result_json[:500]}")
 
             logger.info("Monitoring request completed")
             return
 
         except Exception as e:
-            logger.error(f"Error starting monitoring: {e}", exc_info=True)
+            logger.error(f"Error getting metrics: {e}", exc_info=True)
             update.message.reply_text(
-                f"⚠️ Критическая ошибка при запуске мониторинга: {str(e)}"
+                f"⚠️ Критическая ошибка при получении метрик: {str(e)}"
             )
             return
 
