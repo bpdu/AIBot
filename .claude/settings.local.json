@@ -5,7 +5,9 @@
       "Bash(pip install:*)",
       "Bash(if not exist memory mkdir memory)",
       "Bash(python -m py_compile:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(if not exist rag mkdir rag)",
+      "Bash(mkdir:*)"
     ]
   }
 }
