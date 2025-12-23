@@ -11,6 +11,17 @@ import os
 from mcp import ClientSession
 from mcp.client.websocket import websocket_client
 
+# RAG imports
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent / 'rag'))
+try:
+    from retrieval import rag_query
+    RAG_AVAILABLE = True
+except ImportError:
+    logger.warning("RAG module not available")
+    RAG_AVAILABLE = False
+
 # Load environment variables from the secret files
 load_dotenv(dotenv_path='.secrets/bot-token.env')
 load_dotenv(dotenv_path='.secrets/deepseek-api-key.env')
@@ -348,6 +359,90 @@ def ask_question(update: Update, context: CallbackContext) -> None:
                 f"⚠️ Критическая ошибка при получении метрик: {str(e)}"
             )
             return
+
+    # Проверка на вопросы про API (День 17: RAG)
+    api_keywords = ["api", "endpoint", "sim", "esim", "inventory", "pond mobile", "msisdn",
+                    "transfer", "webhook", "country", "countries", "group", "whitelist"]
+    api_keyword_found = any(keyword in message_lower for keyword in api_keywords)
+
+    if api_keyword_found and RAG_AVAILABLE:
+        logger.info("Detected API-related question, using RAG...")
+        update.message.reply_text("🔍 Ищу информацию в документации Pond Mobile API...")
+
+        try:
+            # Выполнить RAG-запрос с сравнением
+            rag_result = handle_rag_query(user_question)
+
+            if not rag_result["success"]:
+                error_msg = f"⚠️ Ошибка RAG: {rag_result.get('error', 'Unknown error')}"
+                update.message.reply_text(error_msg)
+                # Продолжить с обычным ответом
+            else:
+                # Показать результаты сравнения
+                update.message.reply_text("✅ Анализ завершён! Сравниваю ответы с RAG и без RAG...\n")
+
+                # 1. Ответ БЕЗ RAG
+                without_rag_msg = (
+                    "📝 ОТВЕТ БЕЗ RAG (baseline):\n"
+                    "=" * 40 + "\n"
+                    f"{rag_result['answer_without_rag']}\n\n"
+                    f"📊 Токенов: {rag_result['tokens_without_rag']['total_tokens']}"
+                )
+                # Разбить если слишком длинный
+                if len(without_rag_msg) > 4000:
+                    update.message.reply_text(without_rag_msg[:4000])
+                    update.message.reply_text(without_rag_msg[4000:])
+                else:
+                    update.message.reply_text(without_rag_msg)
+
+                # 2. Релевантные документы
+                if rag_result["relevant_chunks"]:
+                    chunks_msg = "\n📚 НАЙДЕННЫЕ ДОКУМЕНТЫ:\n" + "=" * 40 + "\n"
+                    for i, chunk in enumerate(rag_result["relevant_chunks"], 1):
+                        chunks_msg += (
+                            f"\n{i}. {chunk['method']} {chunk['endpoint_path']}\n"
+                            f"   Релевантность: {chunk['similarity']:.1%}\n"
+                            f"   Категория: {chunk['tag']}\n"
+                        )
+                    update.message.reply_text(chunks_msg)
+
+                # 3. Ответ С RAG
+                if rag_result["answer_with_rag"]:
+                    with_rag_msg = (
+                        "\n🎯 ОТВЕТ С RAG (с документацией):\n"
+                        "=" * 40 + "\n"
+                        f"{rag_result['answer_with_rag']}\n\n"
+                        f"📊 Токенов: {rag_result['tokens_with_rag']['total_tokens']}"
+                    )
+                    # Разбить если слишком длинный
+                    if len(with_rag_msg) > 4000:
+                        update.message.reply_text(with_rag_msg[:4000])
+                        update.message.reply_text(with_rag_msg[4000:])
+                    else:
+                        update.message.reply_text(with_rag_msg)
+
+                # 4. Сравнение
+                comparison_msg = (
+                    "\n📊 СРАВНЕНИЕ:\n"
+                    "=" * 40 + "\n"
+                    f"• Без RAG: {rag_result['tokens_without_rag']['total_tokens']} токенов\n"
+                    f"• С RAG: {rag_result['tokens_with_rag']['total_tokens']} токенов\n"
+                    f"• Найдено документов: {len(rag_result['relevant_chunks'])}\n"
+                    "\n💡 Вывод:\n"
+                    "RAG помогает, когда нужна точная информация из документации API.\n"
+                    "Без RAG модель может давать общие или неточные ответы."
+                )
+                update.message.reply_text(comparison_msg)
+
+                logger.info("RAG comparison completed successfully")
+                return
+
+        except Exception as e:
+            logger.error(f"Error in RAG processing: {e}", exc_info=True)
+            update.message.reply_text(
+                f"⚠️ Ошибка при обработке RAG-запроса: {str(e)}\n"
+                "Продолжаю с обычным ответом..."
+            )
 
     # Add user message to conversation history
     context.user_data['conversation_history'].append({
@@ -844,6 +939,111 @@ def execute_tasks_pipeline() -> dict:
 
     except Exception as e:
         logger.error(f"Pipeline error at step {result['step']}: {e}", exc_info=True)
+        result["error"] = str(e)
+        return result
+
+
+def handle_rag_query(question: str) -> dict:
+    """
+    Обработать запрос с использованием RAG и сравнить с ответом без RAG.
+
+    Args:
+        question: Вопрос пользователя
+
+    Returns:
+        dict с ответами и метаданными:
+        {
+            "success": bool,
+            "question": str,
+            "answer_without_rag": str,
+            "answer_with_rag": str,
+            "relevant_chunks": list,
+            "context": str,
+            "tokens_without_rag": dict,
+            "tokens_with_rag": dict,
+            "error": str
+        }
+    """
+    result = {
+        "success": False,
+        "question": question,
+        "answer_without_rag": None,
+        "answer_with_rag": None,
+        "relevant_chunks": [],
+        "context": "",
+        "tokens_without_rag": {},
+        "tokens_with_rag": {},
+        "error": None
+    }
+
+    try:
+        # Проверить доступность RAG
+        if not RAG_AVAILABLE:
+            result["error"] = "RAG module not available"
+            return result
+
+        logger.info(f"Processing RAG query: '{question}'")
+
+        # Шаг 1: Получить ответ БЕЗ RAG (baseline)
+        logger.info("Step 1: Getting answer WITHOUT RAG")
+        messages_without_rag = [
+            {
+                "role": "system",
+                "content": "Ты - полезный AI-ассистент. Отвечай на вопросы пользователя максимально точно."
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ]
+
+        answer_without_rag, tokens_without_rag = call_deepseek_api(messages_without_rag)
+        result["answer_without_rag"] = answer_without_rag
+        result["tokens_without_rag"] = tokens_without_rag
+        logger.info(f"Answer without RAG: {len(answer_without_rag)} chars, {tokens_without_rag['total_tokens']} tokens")
+
+        # Шаг 2: Найти релевантные чанки документации
+        logger.info("Step 2: Searching for relevant chunks")
+        context, relevant_chunks = rag_query(question, top_k=3)
+
+        if not relevant_chunks:
+            logger.warning("No relevant chunks found")
+            result["error"] = "No relevant documentation found"
+            result["success"] = True  # Partial success - got answer without RAG
+            return result
+
+        result["relevant_chunks"] = relevant_chunks
+        result["context"] = context
+        logger.info(f"Found {len(relevant_chunks)} relevant chunks")
+
+        # Шаг 3: Получить ответ С RAG
+        logger.info("Step 3: Getting answer WITH RAG")
+        messages_with_rag = [
+            {
+                "role": "system",
+                "content": (
+                    "Ты - эксперт по Pond Mobile API. "
+                    "Используй предоставленную документацию для ответа на вопрос пользователя. "
+                    "Если в документации нет информации для ответа, честно скажи об этом. "
+                    "Отвечай на русском языке, чётко и структурированно."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"{context}\n\n---\n\nВопрос пользователя: {question}"
+            }
+        ]
+
+        answer_with_rag, tokens_with_rag = call_deepseek_api(messages_with_rag)
+        result["answer_with_rag"] = answer_with_rag
+        result["tokens_with_rag"] = tokens_with_rag
+        logger.info(f"Answer with RAG: {len(answer_with_rag)} chars, {tokens_with_rag['total_tokens']} tokens")
+
+        result["success"] = True
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in RAG query: {e}", exc_info=True)
         result["error"] = str(e)
         return result
 
