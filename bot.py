@@ -383,8 +383,7 @@ def ask_question(update: Update, context: CallbackContext) -> None:
 
                 # 1. Ответ БЕЗ RAG
                 without_rag_msg = (
-                    "📝 ОТВЕТ БЕЗ RAG (baseline):\n"
-                    "=" * 40 + "\n"
+                    "📝 ОТВЕТ БЕЗ RAG (baseline):\n\n"
                     f"{rag_result['answer_without_rag']}\n\n"
                     f"📊 Токенов: {rag_result['tokens_without_rag']['total_tokens']}"
                 )
@@ -397,7 +396,7 @@ def ask_question(update: Update, context: CallbackContext) -> None:
 
                 # 2. Релевантные документы
                 if rag_result["relevant_chunks"]:
-                    chunks_msg = "\n📚 НАЙДЕННЫЕ ДОКУМЕНТЫ:\n" + "=" * 40 + "\n"
+                    chunks_msg = "📚 НАЙДЕННЫЕ ДОКУМЕНТЫ:\n"
                     for i, chunk in enumerate(rag_result["relevant_chunks"], 1):
                         chunks_msg += (
                             f"\n{i}. {chunk['method']} {chunk['endpoint_path']}\n"
@@ -409,8 +408,7 @@ def ask_question(update: Update, context: CallbackContext) -> None:
                 # 3. Ответ С RAG
                 if rag_result["answer_with_rag"]:
                     with_rag_msg = (
-                        "\n🎯 ОТВЕТ С RAG (с документацией):\n"
-                        "=" * 40 + "\n"
+                        "🎯 ОТВЕТ С RAG (с документацией):\n\n"
                         f"{rag_result['answer_with_rag']}\n\n"
                         f"📊 Токенов: {rag_result['tokens_with_rag']['total_tokens']}"
                     )
@@ -423,12 +421,11 @@ def ask_question(update: Update, context: CallbackContext) -> None:
 
                 # 4. Сравнение
                 comparison_msg = (
-                    "\n📊 СРАВНЕНИЕ:\n"
-                    "=" * 40 + "\n"
+                    "📊 СРАВНЕНИЕ:\n\n"
                     f"• Без RAG: {rag_result['tokens_without_rag']['total_tokens']} токенов\n"
                     f"• С RAG: {rag_result['tokens_with_rag']['total_tokens']} токенов\n"
-                    f"• Найдено документов: {len(rag_result['relevant_chunks'])}\n"
-                    "\n💡 Вывод:\n"
+                    f"• Найдено документов: {len(rag_result['relevant_chunks'])}\n\n"
+                    "💡 Вывод:\n"
                     "RAG помогает, когда нужна точная информация из документации API.\n"
                     "Без RAG модель может давать общие или неточные ответы."
                 )
