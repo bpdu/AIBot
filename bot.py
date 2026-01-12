@@ -17,10 +17,13 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent / 'rag'))
 try:
     from retrieval import rag_query
+    from project_docs_retrieval import query_project_docs
     RAG_AVAILABLE = True
-except ImportError:
-    logger.warning("RAG module not available")
+    PROJECT_DOCS_RAG_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"RAG module not available: {e}")
     RAG_AVAILABLE = False
+    PROJECT_DOCS_RAG_AVAILABLE = False
 
 # Load environment variables from the secret files
 load_dotenv(dotenv_path='.secrets/bot-token.env')
@@ -46,6 +49,7 @@ MODEL_NAME = 'deepseek-chat'  # Main DeepSeek model
 # MCP configuration
 MCP_SERVER_URL = "ws://localhost:8080/mcp"  # Yandex Tracker
 MCP_SERVER2_URL = "ws://localhost:8081/mcp"  # Translation
+MCP_GIT_SERVER_URL = "ws://localhost:8082/mcp"  # Git Integration
 
 def start(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /start is issued."""
@@ -53,22 +57,145 @@ def start(update: Update, context: CallbackContext) -> None:
     update.message.reply_text('Привет! Это бот с моделью DeepSeek Chat через DeepSeek API. Задавай любые вопросы!')
 
 def help_command(update: Update, context: CallbackContext) -> None:
-    """Send a message when the command /help is issued."""
-    help_text = (
-        'Доступные команды:\n'
-        '/start - Начать работу с ботом\n'
-        '/help - Показать это сообщение\n'
-        '/stats - Показать статистику использования токенов и сжатия\n'
-        '/compress - Сжать историю разговора вручную\n'
-        '/clear - Очистить историю разговора\n\n'
-        '📋 Yandex Tracker интеграция:\n'
-        'Спросите про "задачи" или "tracker" - бот получит актуальный список задач через MCP!\n\n'
-        '⏰ Автоматические уведомления:\n'
-        'Каждые 15 минут бот присылает сводку задач из Yandex Tracker\n\n'
-        '💡 Автосжатие: Каждые 10 сообщений история автоматически сжимается для экономии токенов!\n\n'
-        'Просто отправьте мне вопрос, и я отвечу с помощью модели DeepSeek Chat!'
+    """
+    Send a message when the command /help is issued.
+
+    Supports two modes:
+    1. /help - Shows basic help message
+    2. /help <question> - Searches project documentation using RAG and Git MCP
+    """
+    # Получить текст после /help
+    message_text = update.message.text
+    question = message_text.replace('/help', '').strip()
+
+    # Режим 1: Базовая справка
+    if not question:
+        help_text = (
+            '🤖 AIBot - Ассистент разработчика\n\n'
+            'Доступные команды:\n'
+            '/start - Начать работу с ботом\n'
+            '/help - Показать это сообщение\n'
+            '/help <вопрос> - Поиск по документации проекта\n'
+            '/stats - Показать статистику использования токенов и сжатия\n'
+            '/compress - Сжать историю разговора вручную\n'
+            '/clear - Очистить историю разговора\n\n'
+            '📋 Yandex Tracker интеграция:\n'
+            'Спросите про "задачи" или "tracker" - бот получит актуальный список задач через MCP!\n\n'
+            '💡 Автосжатие: Каждые 10 сообщений история автоматически сжимается для экономии токенов!\n\n'
+            '🔍 Примеры использования /help:\n'
+            '/help как добавить новый MCP сервер\n'
+            '/help правила стиля кода\n'
+            '/help архитектура RAG системы\n\n'
+            'Просто отправьте мне вопрос, и я отвечу с помощью модели DeepSeek Chat!'
+        )
+        update.message.reply_text(help_text)
+        return
+
+    # Режим 2: Поиск по документации проекта
+    if not PROJECT_DOCS_RAG_AVAILABLE:
+        update.message.reply_text(
+            "⚠️ Документация проекта недоступна.\n"
+            "Запустите: python rag/create-project-docs-embeddings.py"
+        )
+        return
+
+    update.message.reply_text(
+        f"🔍 Ищу информацию в документации проекта...\n"
+        f"Вопрос: {question}"
     )
-    update.message.reply_text(help_text)
+
+    try:
+        # Получить информацию о Git репозитории
+        git_context = ""
+        try:
+            git_branch_result = call_mcp_tool_sync_on_server(
+                MCP_GIT_SERVER_URL,
+                "get-current-branch"
+            )
+            if git_branch_result:
+                git_data = json.loads(git_branch_result)
+                if git_data.get("success"):
+                    git_context = f"\n\nТекущая ветка: {git_data.get('branch', 'unknown')}"
+        except Exception as e:
+            logger.warning(f"Failed to get git context: {e}")
+
+        # Поиск в документации проекта
+        logger.info(f"Searching project docs for: '{question}'")
+        docs_context, docs_chunks = query_project_docs(question, top_k=5)
+
+        if not docs_chunks:
+            update.message.reply_text(
+                "❌ Не найдено релевантной информации в документации проекта.\n"
+                "Попробуйте переформулировать вопрос."
+            )
+            return
+
+        # Построить промпт для DeepSeek
+        system_message = {
+            "role": "system",
+            "content": (
+                "Ты — AI-ассистент разработчика для проекта AIBot. "
+                "Используй только информацию из документации проекта для ответа. "
+                "Отвечай на русском языке, чётко и структурированно. "
+                "Если в документации нет нужной информации, честно скажи об этом."
+            )
+        }
+
+        user_message = {
+            "role": "user",
+            "content": (
+                f"=== ДОКУМЕНТАЦИЯ ПРОЕКТА ===\n{docs_context}\n\n"
+                f"=== КОНТЕКСТ РЕПОЗИТОРИЯ ==={git_context}\n\n"
+                f"=== ВОПРОС ПОЛЬЗОВАТЕЛЯ ===\n{question}"
+            )
+        }
+
+        messages = [system_message, user_message]
+
+        # Вызвать DeepSeek API
+        logger.info("Calling DeepSeek API with project docs context...")
+        answer, tokens = call_deepseek_api(messages)
+
+        # Форматировать ответ
+        response_parts = [answer]
+
+        # Добавить источники
+        response_parts.append("\n" + "="*40)
+        response_parts.append("📚 ИСТОЧНИКИ")
+        response_parts.append("="*40)
+
+        # Группировать по документам
+        docs_map = {}
+        for chunk in docs_chunks:
+            doc_name = chunk['doc_name']
+            if doc_name not in docs_map:
+                docs_map[doc_name] = []
+            docs_map[doc_name].append(chunk['heading'])
+
+        for doc_name, headings in docs_map.items():
+            response_parts.append(f"\n📄 {doc_name}")
+            for heading in headings:
+                response_parts.append(f"  • {heading}")
+
+        # Добавить статистику
+        response_parts.append(f"\n{'='*40}")
+        response_parts.append("📊 СТАТИСТИКА")
+        response_parts.append("="*40)
+        response_parts.append(f"• Найдено фрагментов: {len(docs_chunks)}")
+        response_parts.append(f"• Токенов использовано: {tokens['total_tokens']}")
+
+        full_response = "\n".join(response_parts)
+
+        # Отправить ответ (с разбиением, если длинный)
+        send_long_message(update, full_response)
+
+        logger.info("Project docs help query completed successfully")
+
+    except Exception as e:
+        logger.error(f"Error in project docs help: {e}", exc_info=True)
+        update.message.reply_text(
+            f"⚠️ Ошибка при поиске в документации: {str(e)}"
+        )
 
 def stats_command(update: Update, context: CallbackContext) -> None:
     """Show token usage statistics."""
