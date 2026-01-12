@@ -81,6 +81,19 @@ AIBot/
 │   ├── git_mcp_server.py       # Git integration server
 │   └── mcp_client.py           # MCP клиент
 │
+├── docs/                       # Техническая документация
+│   ├── README.md               # Обзор документации
+│   ├── OLLAMA_SETUP.md         # Установка Ollama
+│   ├── EMBEDDINGS_GUIDE.md     # Руководство по embeddings
+│   └── QUICK_FIX.md            # Быстрое решение проблем
+│
+├── assistant/                  # День 20: Ассистент разработчика
+│   ├── git_mcp_server.py       # Git MCP сервер
+│   ├── create-project-docs-embeddings.py
+│   ├── project_docs_retrieval.py
+│   ├── demo_developer_assistant.py
+│   └── README.md
+│
 ├── docker/                     # Docker конфигурации
 │   └── monitoring/             # Мониторинг приложение
 │       └── app.py
@@ -94,6 +107,7 @@ AIBot/
 ├── resources/                  # Ресурсы
 │   └── dist.json               # OpenAPI спецификация
 │
+├── check_rag_status.py         # Проверка RAG системы
 └── test_*.py                   # Тестовые скрипты
 ```
 

@@ -29,7 +29,9 @@ OLLAMA_MODEL = "nomic-embed-text"
 DOCS_TO_INDEX = [
     "README.md",
     "ARCHITECTURE.md",
-    "CODE_STYLE.md"
+    "CODE_STYLE.md",
+    "docs/OLLAMA_SETUP.md",
+    "docs/EMBEDDINGS_GUIDE.md"
 ]
 
 
