@@ -1,0 +1,135 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+      - master
+
+jobs:
+  ai-code-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git diff
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install numpy requests python-dotenv
+
+      - name: Setup Ollama for embeddings
+        run: |
+          # Install Ollama
+          curl -fsSL https://ollama.com/install.sh | sh
+
+          # Start Ollama in background
+          ollama serve &
+
+          # Wait for Ollama to start
+          echo "Waiting for Ollama to start..."
+          for i in {1..30}; do
+            if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+              echo "Ollama started successfully"
+              break
+            fi
+            echo "Attempt $i/30: Ollama not ready yet..."
+            sleep 2
+          done
+
+          # Pull embedding model
+          ollama pull nomic-embed-text
+
+          # Verify
+          ollama list
+
+      - name: Cache CODE_STYLE embeddings
+        uses: actions/cache@v4
+        id: cache-embeddings
+        with:
+          path: rag/db.sqlite3
+          key: code-style-embeddings-${{ hashFiles('CODE_STYLE.md') }}
+
+      - name: Index CODE_STYLE.md
+        if: steps.cache-embeddings.outputs.cache-hit != 'true'
+        run: |
+          echo "Indexing CODE_STYLE.md..."
+          python rag/index_code_style.py
+
+          # Verify database created
+          if [ -f rag/db.sqlite3 ]; then
+            echo "✅ Database created successfully"
+            ls -lh rag/db.sqlite3
+          else
+            echo "❌ Failed to create database"
+            exit 1
+          fi
+
+      - name: Start Git MCP Server
+        run: |
+          echo "Starting Git MCP Server..."
+          python assistant/git_mcp_server.py &
+          echo $! > mcp_server.pid
+
+          # Wait for server to start
+          echo "Waiting for MCP server..."
+          for i in {1..10}; do
+            if curl -s http://localhost:8082/ > /dev/null 2>&1; then
+              echo "✅ MCP server started successfully"
+              break
+            fi
+            echo "Attempt $i/10: MCP server not ready..."
+            sleep 2
+          done
+
+          # Verify
+          curl -s http://localhost:8082/ || echo "⚠️ MCP server may not be ready"
+
+      - name: Run AI Code Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+          MCP_GIT_SERVER_URL: "ws://localhost:8082/mcp"
+          OLLAMA_API_URL: "http://127.0.0.1:11434/api/embeddings"
+        run: |
+          echo "Starting PR review..."
+          echo "PR #$PR_NUMBER: $PR_BASE <- $PR_HEAD"
+
+          python assistant/pr_review/review_orchestrator.py
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up..."
+
+          # Stop MCP server
+          if [ -f mcp_server.pid ]; then
+            echo "Stopping MCP server..."
+            kill $(cat mcp_server.pid) || true
+            rm mcp_server.pid
+          fi
+
+          # Stop Ollama (optional, will stop automatically)
+          # pkill ollama || true
+
+          echo "✅ Cleanup complete"

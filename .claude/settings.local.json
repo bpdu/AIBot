@@ -8,7 +8,8 @@
       "Bash(tree:*)",
       "Bash(if not exist rag mkdir rag)",
       "Bash(mkdir:*)",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(find:*)"
     ]
   }
 }
