@@ -118,13 +118,15 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_BASE: ${{ github.event.pull_request.base.ref }}
-          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
           MCP_GIT_SERVER_URL: "ws://localhost:8082/mcp"
           OLLAMA_API_URL: "http://127.0.0.1:11434/api/embeddings"
         run: |
           echo "Starting PR review..."
-          echo "PR #$PR_NUMBER: $PR_BASE <- $PR_HEAD"
+          echo "PR #$PR_NUMBER: ${{ github.event.pull_request.base.ref }} <- ${{ github.event.pull_request.head.ref }}"
+          echo "Base SHA: $PR_BASE"
+          echo "Head SHA: $PR_HEAD"
 
           python assistant/pr_review/review_orchestrator.py
 
