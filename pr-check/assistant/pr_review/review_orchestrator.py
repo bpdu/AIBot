@@ -231,16 +231,16 @@ def main():
     Main entry point для CLI.
 
     Использует environment variables:
-    - PR_NUMBER: Номер PR
-    - GITHUB_REPOSITORY: Repository (owner/repo)
-    - PR_BASE: Базовая ветка
-    - PR_HEAD: Ветка с изменениями
+    - PR_NUMBER: Номер PR (обязательно)
+    - GITHUB_REPOSITORY: Repository (owner/repo) (обязательно)
+    - PR_BASE: Базовая ветка (опционально, не используется при GitHub API)
+    - PR_HEAD: Ветка с изменениями (опционально, не используется при GitHub API)
     """
     # Получить параметры из environment
     pr_number = os.getenv("PR_NUMBER")
     repository = os.getenv("GITHUB_REPOSITORY")
     base_branch = os.getenv("PR_BASE", "main")
-    head_branch = os.getenv("PR_HEAD")
+    head_branch = os.getenv("PR_HEAD", "feature")
 
     # Валидация параметров
     if not pr_number:
@@ -249,10 +249,6 @@ def main():
 
     if not repository:
         logger.error("GITHUB_REPOSITORY environment variable is required")
-        sys.exit(1)
-
-    if not head_branch:
-        logger.error("PR_HEAD environment variable is required")
         sys.exit(1)
 
     try:
