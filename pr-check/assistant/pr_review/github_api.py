@@ -100,6 +100,39 @@ class GitHubAPIClient:
                 logger.error(f"Response: {e.response.text}")
             return None
 
+    def get_pr_diff(self, pr_number: int) -> Optional[str]:
+        """
+        Получить diff для PR через GitHub API.
+
+        Args:
+            pr_number: Номер Pull Request
+
+        Returns:
+            Строка с diff или None при ошибке
+        """
+        url = f"{self.api_base}/repos/{self.repository}/pulls/{pr_number}"
+
+        # Используем специальный Accept header для получения diff
+        headers = self.headers.copy()
+        headers["Accept"] = "application/vnd.github.v3.diff"
+
+        logger.info(f"Getting PR diff from GitHub API: {url}")
+
+        try:
+            response = requests.get(url, headers=headers, timeout=60)
+            response.raise_for_status()
+
+            diff = response.text
+            logger.info(f"✅ Diff received: {len(diff)} chars")
+
+            return diff
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to get PR diff: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response: {e.response.text}")
+            return None
+
     def post_review(
         self,
         pr_number: int,

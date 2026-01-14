@@ -3,7 +3,7 @@
 PR Review Orchestrator - главный координатор автоматического ревью
 
 Объединяет все компоненты системы:
-- Git MCP Client для получения diff
+- GitHub API для получения diff
 - RAG для поиска релевантных правил
 - DeepSeek для генерации ревью
 - GitHub API для публикации
@@ -11,7 +11,6 @@ PR Review Orchestrator - главный координатор автомати�
 Entry point для GitHub Actions workflow.
 """
 
-import asyncio
 import logging
 import sys
 import os
@@ -21,7 +20,6 @@ from typing import Optional, Dict
 # Добавить parent директории в path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from assistant.pr_review.mcp_client import GitMCPClient
 from assistant.pr_review.rag_code_style import get_rules_for_pr_review
 from assistant.pr_review.deepseek_reviewer import DeepSeekReviewer
 from assistant.pr_review.github_api import GitHubAPIClient, format_review_for_github
@@ -40,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def review_pull_request(
+def review_pull_request(
     pr_number: int,
     repository: str,
     base_branch: str,
@@ -86,36 +84,23 @@ async def review_pull_request(
         logger.info(f"✅ PR details: {pr_details.get('title')}")
         logger.info(f"   Files changed: {pr_details.get('changed_files', 0)}")
 
-        # 3. Получение diff через MCP Server
-        logger.info("\n=== Phase 3: Fetching PR Diff via MCP ===")
-        mcp_client = GitMCPClient()
+        # 3. Получение diff через GitHub API (упрощённый подход)
+        logger.info("\n=== Phase 3: Fetching PR Diff via GitHub API ===")
 
-        diff_data = await mcp_client.get_pr_diff(base_branch, head_branch)
+        diff = github_client.get_pr_diff(pr_number)
 
-        if not diff_data or not diff_data.get("success"):
-            error_msg = diff_data.get("error") if diff_data else "Unknown error"
-            logger.error(f"❌ Failed to get PR diff: {error_msg}")
-
-            # Попытка fallback на GitHub API
-            logger.warning("⚠️ MCP failed, falling back to GitHub API")
-            # TODO: реализовать fallback
+        if not diff:
+            logger.error("❌ Failed to get PR diff from GitHub API")
             return False
 
-        diff = diff_data.get("diff", "")
-        stats = diff_data.get("stats", {})
-
-        logger.info(f"✅ Diff received: {stats.get('lines', 0)} lines, {stats.get('chars', 0)} chars")
-
-        if stats.get("truncated"):
-            logger.warning("⚠️ Diff was truncated (too large)")
+        logger.info(f"✅ Diff received: {len(diff)} chars")
 
         # Проверка размера diff
+        truncated = False
         if len(diff) > MAX_DIFF_SIZE_CHARS:
             logger.warning(f"⚠️ Diff too large ({len(diff)} > {MAX_DIFF_SIZE_CHARS})")
             diff = diff[:MAX_DIFF_SIZE_CHARS]
             truncated = True
-        else:
-            truncated = False
 
         # 4. Фильтрация файлов (только Python)
         logger.info("\n=== Phase 4: Filtering Files ===")
@@ -279,13 +264,11 @@ def main():
     # Запуск ревью
     logger.info(f"Starting review for PR #{pr_number}")
 
-    success = asyncio.run(
-        review_pull_request(
-            pr_number=pr_number,
-            repository=repository,
-            base_branch=base_branch,
-            head_branch=head_branch
-        )
+    success = review_pull_request(
+        pr_number=pr_number,
+        repository=repository,
+        base_branch=base_branch,
+        head_branch=head_branch
     )
 
     if success:
