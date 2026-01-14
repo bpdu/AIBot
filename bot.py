@@ -359,8 +359,11 @@ def ask_question(update: Update, context: CallbackContext) -> None:
             if tasks_json:
                 # Парсим задачи
                 tasks_data = json.loads(tasks_json)
-                if tasks_data.get("success") and tasks_data.get("tasks"):
-                    tasks = tasks_data["tasks"]
+
+                # MCP возвращает либо массив задач, либо объект с ошибкой
+                if isinstance(tasks_data, list):
+                    # Успешно получили массив задач
+                    tasks = tasks_data
                     logger.info(f"Retrieved {len(tasks)} tasks from Tracker")
 
                     # Форматируем краткую информацию о задачах для контекста
@@ -368,11 +371,15 @@ def ask_question(update: Update, context: CallbackContext) -> None:
                     for task in tasks[:10]:  # Максимум 10 задач
                         key = task.get("key", "N/A")
                         summary = task.get("summary", "")
-                        status = task.get("status", {}).get("display", "Unknown")
+                        status = task.get("status", "Unknown")  # status уже строка в formatted_task
                         tracker_info += f"• {key}: {summary}\n  Статус: {status}\n"
+                elif isinstance(tasks_data, dict) and "error" in tasks_data:
+                    # Получили ошибку
+                    logger.warning(f"Tracker returned error: {tasks_data['error']}")
+                    tracker_info = f"Ошибка Tracker: {tasks_data['error']}"
                 else:
-                    logger.warning("No tasks found in Tracker or request failed")
-                    tracker_info = "Задачи в Yandex Tracker не найдены."
+                    logger.warning("Unexpected response format from Tracker")
+                    tracker_info = "Неожиданный формат ответа от Tracker."
             else:
                 logger.warning("MCP call returned empty result")
                 tracker_info = "Не удалось получить задачи из Tracker."
