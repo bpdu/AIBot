@@ -346,74 +346,42 @@ def ask_question(update: Update, context: CallbackContext) -> None:
     keyword_found = any(keyword in message_lower for keyword in keywords)
     logger.info(f"Keyword found: {keyword_found}")
 
+    # День 22: Получить задачи из Tracker (если есть keywords)
+    tracker_info = None
     if keyword_found:
-        logger.info("Detected tracker-related question, executing pipeline...")
-        update.message.reply_text("🔄 Запускаю анализ задач из Yandex Tracker...")
+        logger.info("Detected tracker-related question, fetching tasks...")
+        update.message.reply_text("🔄 Проверяю открытые задачи в Yandex Tracker...")
 
         try:
-            # Выполнить полный пайплайн
-            pipeline_result = execute_tasks_pipeline()
+            # Простой вызов MCP для получения задач (не полный pipeline)
+            tasks_json = call_mcp_tool_sync("get-tracker-tasks")
 
-            if not pipeline_result["success"]:
-                # Ошибка в пайплайне
-                error_msg = f"⚠️ Ошибка на этапе '{pipeline_result['step']}': {pipeline_result.get('error', 'Unknown error')}"
-                update.message.reply_text(error_msg)
+            if tasks_json:
+                # Парсим задачи
+                tasks_data = json.loads(tasks_json)
+                if tasks_data.get("success") and tasks_data.get("tasks"):
+                    tasks = tasks_data["tasks"]
+                    logger.info(f"Retrieved {len(tasks)} tasks from Tracker")
 
-                # Если удалось получить задачи, добавим их в контекст
-                if pipeline_result.get("tasks_json"):
-                    tracker_context = {
-                        "role": "system",
-                        "content": f"Список задач из Yandex Tracker:\n{pipeline_result['tasks_json']}"
-                    }
-                    context.user_data['conversation_history'].insert(0, tracker_context)
+                    # Форматируем краткую информацию о задачах для контекста
+                    tracker_info = "Открытые задачи из Yandex Tracker:\n"
+                    for task in tasks[:10]:  # Максимум 10 задач
+                        key = task.get("key", "N/A")
+                        summary = task.get("summary", "")
+                        status = task.get("status", {}).get("display", "Unknown")
+                        tracker_info += f"• {key}: {summary}\n  Статус: {status}\n"
+                else:
+                    logger.warning("No tasks found in Tracker or request failed")
+                    tracker_info = "Задачи в Yandex Tracker не найдены."
             else:
-                # Пайплайн успешно выполнен
-                update.message.reply_text("✅ Анализ завершён!")
-
-                # Показать русский анализ
-                if pipeline_result.get("analysis"):
-                    # Разбиваем на части, если текст длинный (Telegram limit 4096 chars)
-                    analysis_text = f"📊 Анализ задач:\n\n{pipeline_result['analysis']}"
-                    if len(analysis_text) > 4000:
-                        update.message.reply_text(analysis_text[:4000])
-                        update.message.reply_text(analysis_text[4000:])
-                    else:
-                        update.message.reply_text(analysis_text)
-
-                # Показать перевод на эсперанто (если доступен)
-                if pipeline_result.get("translation"):
-                    translation_text = f"🌐 Traduko en Esperanton:\n\n{pipeline_result['translation']}"
-                    if len(translation_text) > 4000:
-                        update.message.reply_text(translation_text[:4000])
-                        update.message.reply_text(translation_text[4000:])
-                    else:
-                        update.message.reply_text(translation_text)
-                elif pipeline_result.get("error") and "перевод" in pipeline_result["error"].lower():
-                    update.message.reply_text(
-                        "⚠️ Перевод на эсперанто временно недоступен. Показан русский вариант."
-                    )
-
-                # Добавить в контекст разговора
-                context_content = f"Анализ задач из Yandex Tracker:\n{pipeline_result['analysis']}"
-                if pipeline_result.get("translation"):
-                    context_content += f"\n\nПеревод на эсперанто:\n{pipeline_result['translation']}"
-
-                tracker_context = {
-                    "role": "system",
-                    "content": context_content
-                }
-                context.user_data['conversation_history'].insert(0, tracker_context)
-
-            logger.info("Pipeline execution completed")
+                logger.warning("MCP call returned empty result")
+                tracker_info = "Не удалось получить задачи из Tracker."
 
         except Exception as e:
-            logger.error(f"Error executing pipeline: {e}", exc_info=True)
-            update.message.reply_text(
-                f"⚠️ Критическая ошибка при выполнении анализа задач: {str(e)}"
-            )
+            logger.error(f"Error fetching tracker tasks: {e}", exc_info=True)
+            tracker_info = f"Ошибка при получении задач из Tracker: {str(e)}"
 
-        # Завершить обработку - пайплайн уже выдал результаты
-        return
+        # НЕ возвращаемся! Продолжаем обработку для комбинированного ответа
 
     # Проверка на ключевые слова про мониторинг
     monitoring_keywords = ["мониторинг", "health", "состояние сервера", "метрики", "monitoring", "статус сервера"]
@@ -497,7 +465,7 @@ def ask_question(update: Update, context: CallbackContext) -> None:
             )
             return
 
-    # Проверка на вопросы про API (День 17: RAG)
+    # Проверка на вопросы про API (День 17: RAG, День 22: комбинация с Tracker)
     api_keywords = ["api", "endpoint", "sim", "esim", "inventory", "pond mobile", "msisdn",
                     "transfer", "webhook", "country", "countries", "group", "whitelist"]
     api_keyword_found = any(keyword in message_lower for keyword in api_keywords)
@@ -507,10 +475,11 @@ def ask_question(update: Update, context: CallbackContext) -> None:
         update.message.reply_text("🔍 Ищу информацию в документации Pond Mobile API...")
 
         try:
-            # Выполнить RAG-запрос с передачей истории диалога
+            # Выполнить RAG-запрос с передачей истории диалога и tracker info
             rag_result = handle_rag_query(
                 question=user_question,
-                conversation_history=context.user_data.get('conversation_history', [])
+                conversation_history=context.user_data.get('conversation_history', []),
+                tracker_info=tracker_info  # День 22: Добавляем информацию из Tracker
             )
 
             if not rag_result["success"]:
@@ -528,7 +497,7 @@ def ask_question(update: Update, context: CallbackContext) -> None:
                     "content": rag_result['answer']  # Только текст ответа
                 })
 
-                logger.info("RAG query completed successfully")
+                logger.info("RAG query completed successfully with tracker context")
                 return
 
         except Exception as e:
@@ -537,6 +506,16 @@ def ask_question(update: Update, context: CallbackContext) -> None:
                 f"⚠️ Ошибка при обработке RAG-запроса: {str(e)}\n"
                 "Продолжаю с обычным ответом..."
             )
+
+    # День 22: Если есть только tracker_info (без API keywords), используем его в обычном DeepSeek запросе
+    if tracker_info and not api_keyword_found:
+        logger.info("Adding tracker context to conversation for non-API question")
+        # Добавляем информацию из Tracker как system message в начало контекста
+        tracker_system_msg = {
+            "role": "system",
+            "content": f"=== ИНФОРМАЦИЯ ИЗ YANDEX TRACKER ===\n{tracker_info}"
+        }
+        context.user_data['conversation_history'].insert(0, tracker_system_msg)
 
     # Add user message to conversation history
     context.user_data['conversation_history'].append({
@@ -1037,14 +1016,15 @@ def execute_tasks_pipeline() -> dict:
         return result
 
 
-def handle_rag_query(question: str, conversation_history: list = None) -> dict:
+def handle_rag_query(question: str, conversation_history: list = None, tracker_info: str = None) -> dict:
     """
-    Обработать запрос с использованием RAG с учётом истории диалога.
+    Обработать запрос с использованием RAG с учётом истории диалога и информации из Tracker.
 
     Args:
         question: Вопрос пользователя
         conversation_history: История диалога (опционально)
                             Формат: [{"role": "user"|"assistant"|"system", "content": str}]
+        tracker_info: Информация о задачах из Yandex Tracker (опционально, День 22)
 
     Returns:
         dict с ответом и метаданными:
@@ -1126,14 +1106,17 @@ def handle_rag_query(question: str, conversation_history: list = None) -> dict:
                 history_context = "\n".join(history_parts)
                 logger.info(f"Using conversation history: {len(recent_messages)} messages")
 
-        # Построить промпт с учётом истории
+        # Построить промпт с учётом истории и tracker info (День 22)
         system_message = {
             "role": "system",
             "content": (
                 "Ты — AI-ассистент для работы с Pond Mobile API. "
-                "Используй только информацию из предоставленной документации для ответа. "
+                "Используй информацию из предоставленной документации для ответа. "
+                "Если есть информация из Yandex Tracker о связанных задачах, обязательно упомяни её. "
                 "Учитывай контекст предыдущего диалога, если он есть. "
-                "Если в документации нет нужной информации, честно скажи об этом. "
+                "Если в документации нет нужной информации, честно скажи об этом, "
+                "но проверь, есть ли открытая задача в Tracker по этой теме. "
+                "Формат ответа: сначала информация из документации, затем статус задач из Tracker. "
                 "Отвечай на русском языке, чётко и структурированно."
             )
         }
@@ -1151,6 +1134,13 @@ def handle_rag_query(question: str, conversation_history: list = None) -> dict:
         user_content_parts.append(
             "=== РЕЛЕВАНТНАЯ ДОКУМЕНТАЦИЯ ===\n" + context_text
         )
+
+        # День 22: Добавить информацию из Tracker (если есть)
+        if tracker_info:
+            user_content_parts.append(
+                "=== ОТКРЫТЫЕ ЗАДАЧИ ИЗ YANDEX TRACKER ===\n" + tracker_info
+            )
+            logger.info("Added Tracker context to RAG query")
 
         # Добавить текущий вопрос
         user_content_parts.append(
