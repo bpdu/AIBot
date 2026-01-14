@@ -234,7 +234,7 @@ def main():
     - PR_NUMBER: Номер PR (обязательно)
     - GITHUB_REPOSITORY: Repository (owner/repo) (обязательно)
     - PR_BASE: Базовая ветка (опционально, не используется при GitHub API)
-    - PR_HEAD: Ветка с изменениями (опционально, не используется при GitHub API)
+    - PR_HEAD: Ветка с изменениями (опционально, по умолчанию "feature")
     """
     # Получить параметры из environment
     pr_number = os.getenv("PR_NUMBER")
