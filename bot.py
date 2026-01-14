@@ -329,7 +329,17 @@ def ask_question(update: Update, context: CallbackContext) -> None:
     current_message_num = context.user_data['message_counter']
 
     # Проверка на ключевые слова про задачи из Tracker
-    keywords = ["задач", "task", "tracker", "issue", "трекер"]
+    # День 22: Расширенные keywords для поддержки пользователей
+    keywords = [
+        # Tracker/issue keywords
+        "задач", "task", "tracker", "issue", "трекер", "ticket", "тикет",
+        # Problem keywords
+        "error", "problem", "not working", "fail", "bug", "ошибк",
+        # HTTP errors
+        "401", "403", "404", "429", "500",
+        # Support keywords
+        "alert", "warning", "90%", "threshold", "custom", "support"
+    ]
     message_lower = user_question.lower()
 
     logger.info(f"Checking message for tracker keywords: '{message_lower}'")
