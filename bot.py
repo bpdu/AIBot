@@ -293,6 +293,26 @@ def compress_command(update: Update, context: CallbackContext) -> None:
     else:
         update.message.reply_text(f"❌ Не удалось сжать историю: {compression_result.get('reason', 'Неизвестная ошибка')}")
 
+def get_priority_from_message(message: str) -> str:
+    """
+    День 23: Определить приоритет задачи по ключевым словам в сообщении.
+
+    Критичный приоритет: важный, критичный, обязательный, срочный, critical, urgent, important
+    Средний приоритет: всё остальное
+    """
+    critical_keywords = [
+        "важн", "критичн", "обязательн", "срочн",  # русские
+        "critical", "urgent", "important", "asap", "blocker"  # английские
+    ]
+    message_lower = message.lower()
+
+    for keyword in critical_keywords:
+        if keyword in message_lower:
+            return "critical"
+
+    return "normal"
+
+
 def ask_question(update: Update, context: CallbackContext) -> None:
     """Send the user's question to DeepSeek API and return the response."""
     if update.message is None or update.message.text is None:
@@ -323,6 +343,72 @@ def ask_question(update: Update, context: CallbackContext) -> None:
     # Initialize message counter
     if 'message_counter' not in context.user_data:
         context.user_data['message_counter'] = 0
+
+    # День 23: Инициализация состояния для создания задачи
+    if 'pending_task' not in context.user_data:
+        context.user_data['pending_task'] = None
+
+    # День 23: Проверка на подтверждение создания задачи
+    if context.user_data.get('pending_task'):
+        pending = context.user_data['pending_task']
+        message_lower = user_question.lower().strip()
+
+        # Проверяем подтверждение
+        confirm_keywords = ["да", "yes", "создай", "создать", "ок", "ok", "конечно", "давай"]
+        cancel_keywords = ["нет", "no", "отмена", "cancel", "не надо", "не нужно"]
+
+        if any(kw in message_lower for kw in confirm_keywords):
+            # Пользователь подтвердил - создаём задачу
+            logger.info(f"User confirmed task creation: {pending['summary']}")
+            update.message.reply_text("✅ Создаю задачу в Yandex Tracker...")
+
+            try:
+                # Вызываем MCP для создания задачи
+                result_json = call_mcp_tool_sync(
+                    "create-tracker-task",
+                    {
+                        "summary": pending['summary'],
+                        "description": pending['description'],
+                        "priority": pending['priority']
+                    }
+                )
+
+                if result_json:
+                    result = json.loads(result_json)
+                    if result.get("success"):
+                        task_info = result["task"]
+                        priority_display = "Критичный" if pending['priority'] == "critical" else "Средний"
+                        update.message.reply_text(
+                            f"✅ Задача создана!\n\n"
+                            f"📋 {task_info['key']}: {task_info['summary']}\n"
+                            f"🔹 Приоритет: {priority_display}\n"
+                            f"🔗 {task_info['url']}"
+                        )
+                    else:
+                        update.message.reply_text(f"❌ Ошибка создания задачи: {result.get('error', 'Unknown')}")
+                else:
+                    update.message.reply_text("❌ Не удалось создать задачу (MCP недоступен)")
+            except Exception as e:
+                logger.error(f"Error creating task: {e}", exc_info=True)
+                update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+            # Сбрасываем состояние
+            context.user_data['pending_task'] = None
+            return
+
+        elif any(kw in message_lower for kw in cancel_keywords):
+            # Пользователь отказался
+            update.message.reply_text("👌 Хорошо, задача не будет создана.")
+            context.user_data['pending_task'] = None
+            return
+        else:
+            # Непонятный ответ - напоминаем
+            update.message.reply_text(
+                "🤔 Не понял ваш ответ. Создать задачу?\n"
+                f"📋 {pending['summary']}\n\n"
+                "Ответьте 'да' или 'нет'"
+            )
+            return
 
     # Increment message counter
     context.user_data['message_counter'] += 1
@@ -503,6 +589,51 @@ def ask_question(update: Update, context: CallbackContext) -> None:
                     "role": "assistant",
                     "content": rag_result['answer']  # Только текст ответа
                 })
+
+                # День 23: Проверяем, не нашёл ли бот информацию о функции
+                # Если функция не найдена - предлагаем создать задачу
+                answer_lower = rag_result['answer'].lower()
+                not_found_indicators = [
+                    "не нашёл", "не найден", "не найдена", "не поддерживается",
+                    "нет информации", "не обнаружен", "отсутствует", "не реализован",
+                    "not found", "not available", "not supported", "no information",
+                    "doesn't support", "does not support", "не указан", "не описан"
+                ]
+
+                feature_requested = any(indicator in answer_lower for indicator in not_found_indicators)
+
+                # Также проверяем, что вопрос был о функции (не просто информационный)
+                feature_keywords = ["как", "можно ли", "how to", "can i", "is it possible",
+                                   "поддержива", "support", "есть ли", "добавить", "получить"]
+                is_feature_question = any(kw in user_question.lower() for kw in feature_keywords)
+
+                if feature_requested and is_feature_question:
+                    # Определяем приоритет по исходному сообщению
+                    priority = get_priority_from_message(user_question)
+                    priority_display = "Критичный" if priority == "critical" else "Средний"
+
+                    # Генерируем название задачи из вопроса пользователя
+                    # Берём первые 100 символов вопроса как summary
+                    task_summary = f"Feature request: {user_question[:100]}"
+                    if len(user_question) > 100:
+                        task_summary += "..."
+
+                    # Сохраняем pending task
+                    context.user_data['pending_task'] = {
+                        'summary': task_summary,
+                        'description': f"Запрос от пользователя:\n{user_question}\n\nОтвет бота:\n{rag_result['answer'][:500]}",
+                        'priority': priority,
+                        'original_question': user_question
+                    }
+
+                    # Спрашиваем пользователя
+                    update.message.reply_text(
+                        f"💡 Похоже, эта функция ещё не реализована в Pond Mobile API.\n\n"
+                        f"Хотите создать задачу в Yandex Tracker?\n"
+                        f"📋 {task_summary}\n"
+                        f"🔹 Приоритет: {priority_display}\n\n"
+                        f"Ответьте 'да' или 'нет'"
+                    )
 
                 logger.info("RAG query completed successfully with tracker context")
                 return
