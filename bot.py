@@ -415,7 +415,7 @@ def ask_question(update: Update, context: CallbackContext) -> None:
     current_message_num = context.user_data['message_counter']
 
     # Проверка на ключевые слова про задачи из Tracker
-    # День 22: Расширенные keywords для поддержки пользователей
+    # День 22-23: Расширенные keywords для поддержки пользователей
     keywords = [
         # Tracker/issue keywords
         "задач", "task", "tracker", "issue", "трекер", "ticket", "тикет",
@@ -424,13 +424,36 @@ def ask_question(update: Update, context: CallbackContext) -> None:
         # HTTP errors
         "401", "403", "404", "429", "500",
         # Support keywords
-        "alert", "warning", "90%", "threshold", "custom", "support"
+        "alert", "warning", "90%", "threshold", "custom", "support",
+        # День 23: Project status keywords
+        "статус проект", "project status", "прогресс", "progress",
+        "что сделано", "what's done", "текущий статус", "current status",
+        "приоритет", "priority", "high priority", "backlog", "бэклог"
     ]
     message_lower = user_question.lower()
 
     logger.info(f"Checking message for tracker keywords: '{message_lower}'")
     keyword_found = any(keyword in message_lower for keyword in keywords)
-    logger.info(f"Keyword found: {keyword_found}")
+
+    # День 23: Специальная проверка на вопрос о статусе проекта
+    # Проверяем комбинации слов для большей гибкости
+    status_keywords = ["project status", "текущий статус", "current status",
+                       "прогресс", "progress", "что сделано", "what's done", "backlog", "бэклог"]
+    # Дополнительная проверка: "статус" + "проект" в одном сообщении
+    has_status_word = "статус" in message_lower or "status" in message_lower
+    has_project_word = "проект" in message_lower or "project" in message_lower
+
+    is_status_question = (
+        any(kw in message_lower for kw in status_keywords) or
+        (has_status_word and has_project_word)
+    )
+
+    # Если это вопрос о статусе - форсируем получение задач из Tracker
+    if is_status_question and not keyword_found:
+        keyword_found = True
+        logger.info("Status question detected, forcing Tracker lookup")
+
+    logger.info(f"Keyword found: {keyword_found}, Is status question: {is_status_question}")
 
     # День 22: Получить задачи из Tracker (если есть keywords)
     tracker_info = None
@@ -473,6 +496,83 @@ def ask_question(update: Update, context: CallbackContext) -> None:
         except Exception as e:
             logger.error(f"Error fetching tracker tasks: {e}", exc_info=True)
             tracker_info = f"Ошибка при получении задач из Tracker: {str(e)}"
+
+        # День 23: Если это вопрос о статусе проекта - даём полный отчёт
+        if is_status_question and tracker_info:
+            logger.info("Generating project status report...")
+
+            try:
+                # Получаем задачи снова для детального анализа
+                tasks_json = call_mcp_tool_sync("get-tracker-tasks")
+                if tasks_json:
+                    tasks_data = json.loads(tasks_json)
+
+                    if isinstance(tasks_data, list) and len(tasks_data) > 0:
+                        # Группируем задачи по статусу и приоритету
+                        by_status = {}
+                        by_priority = {}
+
+                        for task in tasks_data:
+                            status = task.get("status", "Unknown")
+                            priority = task.get("priority", "Normal")
+
+                            if status not in by_status:
+                                by_status[status] = []
+                            by_status[status].append(task)
+
+                            if priority not in by_priority:
+                                by_priority[priority] = []
+                            by_priority[priority].append(task)
+
+                        # Формируем красивый отчёт
+                        report = f"📊 **Статус проекта Pond Mobile API**\n\n"
+                        report += f"📋 Всего задач: {len(tasks_data)}\n\n"
+
+                        # По статусу
+                        report += "**По статусу:**\n"
+                        for status, tasks in by_status.items():
+                            report += f"• {status}: {len(tasks)} задач(и)\n"
+
+                        report += "\n**По приоритету:**\n"
+                        # Сортируем приоритеты
+                        priority_order = ["Blocker", "Critical", "Критичный", "High", "Normal", "Средний", "Low"]
+                        for prio in priority_order:
+                            if prio in by_priority:
+                                report += f"• {prio}: {len(by_priority[prio])} задач(и)\n"
+                        # Остальные приоритеты
+                        for prio, tasks in by_priority.items():
+                            if prio not in priority_order:
+                                report += f"• {prio}: {len(tasks)} задач(и)\n"
+
+                        report += "\n**Список задач:**\n"
+                        for task in tasks_data[:15]:  # Максимум 15 задач
+                            key = task.get("key", "N/A")
+                            summary = task.get("summary", "")[:50]
+                            status = task.get("status", "?")
+                            priority = task.get("priority", "?")
+                            report += f"• **{key}**: {summary}\n"
+                            report += f"  └ Статус: {status} | Приоритет: {priority}\n"
+
+                        send_long_message(update, report)
+
+                        # Добавляем в историю
+                        context.user_data['conversation_history'].append({
+                            "role": "user",
+                            "content": user_question
+                        })
+                        context.user_data['conversation_history'].append({
+                            "role": "assistant",
+                            "content": report
+                        })
+
+                        return
+                    else:
+                        update.message.reply_text("📋 В Yandex Tracker пока нет задач по проекту.")
+                        return
+
+            except Exception as e:
+                logger.error(f"Error generating status report: {e}", exc_info=True)
+                # Продолжаем с обычной обработкой
 
         # НЕ возвращаемся! Продолжаем обработку для комбинированного ответа
 
